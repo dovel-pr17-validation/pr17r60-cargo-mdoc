@@ -1,0 +1,25 @@
+# mdoc-editor
+
+mdoc's Markdown editor, built on GPUI's text primitives: an
+`EntityInputHandler` for keyboard and IME input, per-line shaping, and a custom
+`Element` that lays out and paints lines, caret and selection. Internal to the
+mdoc workspace (`publish = false`).
+
+It owns the Markdown source, selection, undo/redo history and edit
+transactions. With a `SyntaxStyle` installed it renders live-preview
+(WYSIWYG) Markdown — headings, emphasis, links, lists and tasks, tables,
+GitHub alerts, code blocks, images and highlights — revealing syntax near the
+caret; without one it is a raw-text editor. Saved bytes are always the exact
+source. Standard Markdown only ([ADR 0030](../../docs/adr/0030-render-standard-markdown-only.md)).
+
+The host supplies images, file chips, search matches and source annotations
+(pseudonymization), and receives `EditorEvent`s. Right-to-left lines are laid
+out through `gpui-bidi`. Edit transactions come from `mdoc-history`;
+Markdown recognition (spans, line prefixes, tables) comes from the GUI-free
+`mdoc-markdown`, whose spans this crate maps to GPUI styles.
+
+Spell-check hooks (`Diagnostic`, `set_diagnostics`, `on_suggest`,
+`spell_exclusions`) serve the app's spellcheck; `cargo run -p mdoc-editor
+--example demo` wires them to `mdoc-spell`.
+
+MIT-licensed (see [LICENSE](LICENSE)), derived from Zorite's editor.

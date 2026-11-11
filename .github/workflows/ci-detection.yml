@@ -1,0 +1,140 @@
+name: Detection gate
+
+# The detection gate on hosted macos-26 (ADR 0095): the pinned FP16 model,
+# downloaded from its pinned Hugging Face revision and cached, reruns over
+# the recognition fixtures (`just recognize --check`). The fixtures split
+# over `shards` parallel jobs, `ci/detection (<k>)`: the 3-core M1 runs about
+# 50 fixtures in 3 minutes, and a model run over 5 minutes fails, so the
+# queue, the nightly and recognition-area PR heads (ci.yml's
+# `detection-head`) run 4 shards: 3 took 84% of the budget (ADR 0100). A
+# shard warns past 80% of it, the signal to add one. `ci/detection` sums the shards up and is the context merge-gate
+# reads. A failing shard uploads its stale snapshots, regenerated, as
+# `detection-snapshots-<k>`; `just snapshots-fetch <pr|run>` writes them into
+# the tree for review. No workflow writes to PR branches.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to test; empty tests the triggering ref.
+        type: string
+        default: ""
+      shards:
+        description: Parallel jobs the fixtures split over.
+        type: number
+        default: 4
+      build-only:
+        description: Set up the model and build only, which saves both caches on main (main-caches.yml).
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit to test; empty tests the triggering ref.
+        type: string
+        default: ""
+      shards:
+        description: Parallel jobs the fixtures split over (4; 3 take 84% of the 5-minute model budget). A manual run takes 4 of the account's 5 macOS runners.
+        type: number
+        default: 4
+      build-only:
+        description: Set up the model and build only.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The matrix needs the shard numbers as a list; expressions cannot count.
+  shards:
+    name: detection shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      count: ${{ steps.list.outputs.count }}
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - id: list
+        env:
+          SHARDS: ${{ inputs.shards || 4 }}
+        run: printf 'count=%s\nlist=[%s]\n' "$SHARDS" "$(seq -s, 1 "$SHARDS")" >> "$GITHUB_OUTPUT"
+
+  detection:
+    name: ci/detection (${{ matrix.shard }})
+    needs: shards
+    runs-on: macos-26
+    # Job limits (ADR 0095): each shard 10 minutes once `main` saves the
+    # detection build's cache (CI redesign item 7); until then a cold
+    # `just recognize --setup` compiles for about 6 minutes, so 20.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.shards.outputs.list) }}
+    env:
+      SHARD: ${{ matrix.shard }}/${{ needs.shards.outputs.count }}
+      # Scores depend on ONNX Runtime's thread count, and the snapshots are
+      # recorded on this runner with 4 (mdoc-detect's default, ADR 0095).
+      MDOC_DETECT_THREADS: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+        with:
+          tools: just
+
+      # The app-data folders `just recognize` reads, keyed by the model pins.
+      # Setup re-verifies every file, so a runtime pin change refetches only
+      # the runtime.
+      - name: Restore the model
+        id: model
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/Library/Application Support/mdoc/pseudonymization
+            ~/Library/Application Support/mdoc/ocr/v1
+          key: detection-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('resources/pseudonymization-model.json') }}
+
+      # mdoc's own verified, pinned download; retried once (ADR 0095).
+      - name: Set up the model
+        run: just recognize --setup || { echo "::warning::model setup failed; retrying once"; just recognize --setup; }
+
+      # Saved right away, so a failing gate still keeps the download. Only
+      # main's copy is visible to other branches, so only main saves it
+      # (main-caches.yml); a queue commit's copy would only fill the 10 GB.
+      - name: Save the model
+        if: steps.model.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/Library/Application Support/mdoc/pseudonymization
+            ~/Library/Application Support/mdoc/ocr/v1
+          key: ${{ steps.model.outputs.cache-primary-key }}
+
+      - name: Detection gate
+        if: ${{ !inputs.build-only }}
+        run: just recognize --check --shard "$SHARD" --out target/detection-snapshots
+
+      - name: Regenerated snapshots
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: detection-snapshots-${{ matrix.shard }}
+          path: target/detection-snapshots
+          retention-days: 7
+
+  # Green only when every shard ran and passed, so a missing, cancelled or
+  # skipped shard never looks green (ADR 0095).
+  summary:
+    name: ci/detection
+    needs: [shards, detection]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          RESULT: ${{ needs.detection.result }}
+        run: '[ "$RESULT" = success ] || { echo "::error::detection shards: $RESULT"; exit 1; }'

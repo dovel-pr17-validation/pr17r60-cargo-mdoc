@@ -1,0 +1,1987 @@
+//! Propagation (ADR 0092): the forms of a known full person name elsewhere in
+//! the document become proposals. A form with exactly one candidate full
+//! name joins that identity; with two or more it keeps an identity of its
+//! own (ADR 0068) and Same as… or the merge hint (ADR 0080) offers each.
+//!
+//! Forms: the surname alone (with a title), the first name alone, first name
+//! and patronymic, the surname with initials, the whole name in another
+//! wording (a case form, a patronymic added), Russian case forms of each (a
+//! fixed suffix table, not morphology) and nicknames from [`nicknames`]. A
+//! whole name is found before its parts, so it is one proposal.
+use super::{
+    Category, Recognizer, Review, exact_boundary,
+    identities::{
+        TITLES, cyrillic, is_particle, merge_particles, name_words, name_words_cased,
+        split_full_name_inflected, surname_forms,
+    },
+    intersects, safe_span,
+    syntax::protected_syntax,
+};
+use std::{
+    collections::{BTreeSet, HashSet},
+    ops::Range,
+    sync::{Arc, LazyLock},
+};
+
+/// Nicknames of a lowercase given name, lowercase. Only names already in the
+/// document yield them. Data until the rule pack's `variants` section takes
+/// it over (ADR 0092).
+pub fn nicknames(given: &str) -> &'static [&'static str] {
+    const TABLE: &[(&str, &[&str])] = &[
+        // Russian
+        ("александр", &["саша", "шура"]),
+        ("александра", &["саша", "шура"]),
+        ("алексей", &["лёша", "леша"]),
+        ("анастасия", &["настя"]),
+        ("андрей", &["андрюша"]),
+        ("анна", &["аня"]),
+        ("владимир", &["володя", "вова"]),
+        ("галина", &["галя"]),
+        ("дмитрий", &["дима"]),
+        ("евгений", &["женя"]),
+        ("евгения", &["женя"]),
+        ("екатерина", &["катя"]),
+        ("елена", &["лена"]),
+        ("елизавета", &["лиза"]),
+        ("иван", &["ваня"]),
+        ("ирина", &["ира"]),
+        ("константин", &["костя"]),
+        ("ксения", &["ксюша"]),
+        ("людмила", &["люда"]),
+        ("мария", &["маша", "маруся"]),
+        ("марина", &["мариша"]),
+        ("михаил", &["миша"]),
+        ("надежда", &["надя"]),
+        ("наталья", &["наташа"]),
+        ("николай", &["коля"]),
+        ("ольга", &["оля"]),
+        ("павел", &["паша"]),
+        ("светлана", &["света"]),
+        ("сергей", &["серёжа", "сережа"]),
+        ("татьяна", &["таня"]),
+        ("юлия", &["юля"]),
+        // English
+        ("alexander", &["alex"]),
+        ("anthony", &["tony"]),
+        ("benjamin", &["ben"]),
+        ("catherine", &["cathy", "kate", "katie"]),
+        ("charles", &["charlie", "chuck"]),
+        ("christopher", &["chris"]),
+        ("daniel", &["dan", "danny"]),
+        ("deborah", &["debbie"]),
+        ("edward", &["eddie", "ted", "ned"]),
+        ("elizabeth", &["liz", "lizzie", "beth", "betty", "eliza"]),
+        ("james", &["jim", "jimmy", "jamie"]),
+        ("jennifer", &["jen", "jenny"]),
+        ("john", &["jack", "johnny"]),
+        ("jonathan", &["jon"]),
+        ("joseph", &["joe", "joey"]),
+        ("katherine", &["kate", "katie", "kathy"]),
+        ("margaret", &["maggie", "meg", "peggy"]),
+        ("matthew", &["matt"]),
+        ("michael", &["mike", "mick"]),
+        ("nicholas", &["nick"]),
+        ("patricia", &["pat", "patty", "trish"]),
+        ("rebecca", &["becky"]),
+        ("richard", &["rick", "rich", "dick"]),
+        ("robert", &["bob", "bobby", "rob", "robbie"]),
+        ("samuel", &["sam"]),
+        ("stephen", &["steve"]),
+        ("steven", &["steve"]),
+        ("susan", &["sue", "susie"]),
+        ("thomas", &["tom", "tommy"]),
+        ("victoria", &["vicky", "tori"]),
+        ("william", &["bill", "billy", "will", "liam"]),
+    ];
+    TABLE
+        .iter()
+        .find(|(name, _)| *name == given)
+        .map_or(&[], |(_, nicknames)| nicknames)
+}
+
+/// Lowercase forms that are also ordinary words: proposed only capitalised
+/// mid-sentence, where the capital marks a name.
+fn common_word(form: &str) -> bool {
+    const WORDS: &[&str] = &[
+        // English given names, nicknames and surnames
+        "amber",
+        "april",
+        "art",
+        "baker",
+        "banks",
+        "bell",
+        "best",
+        "bill",
+        "bishop",
+        "black",
+        "brown",
+        "bush",
+        "carter",
+        "case",
+        "chase",
+        "chuck",
+        "church",
+        "cook",
+        "cross",
+        "dawn",
+        "dick",
+        "faith",
+        "field",
+        "fisher",
+        "fox",
+        "frank",
+        "frost",
+        "ginger",
+        "grace",
+        "grant",
+        "green",
+        "guy",
+        "hazel",
+        "hill",
+        "holly",
+        "hope",
+        "hunter",
+        "iris",
+        "ivy",
+        "jack",
+        "joy",
+        "june",
+        "king",
+        "knight",
+        "lamb",
+        "lane",
+        "law",
+        "little",
+        "long",
+        "love",
+        "mark",
+        "mason",
+        "may",
+        "miles",
+        "noble",
+        "page",
+        "park",
+        "pat",
+        "pearl",
+        "penny",
+        "porter",
+        "price",
+        "rich",
+        "rob",
+        "rose",
+        "ruby",
+        "short",
+        "smith",
+        "snow",
+        "stone",
+        "sue",
+        "summer",
+        "ward",
+        "white",
+        "will",
+        "wolf",
+        "wood",
+        "young",
+        // Russian given names and their forms
+        "ада",
+        "аврора",
+        "вера",
+        "веры",
+        "вере",
+        "веру",
+        "верой",
+        "лада",
+        "лев",
+        "лиана",
+        "лилия",
+        "лилии",
+        "лилию",
+        "любовь",
+        "мила",
+        "мира",
+        "миры",
+        "мире",
+        "миру",
+        "надежда",
+        "надежды",
+        "надежде",
+        "надежду",
+        "надеждой",
+        "роза",
+        "розы",
+        "розе",
+        "розу",
+        "розой",
+        "роман",
+        "романа",
+        "роману",
+        "романом",
+        "романе",
+        "слава",
+        "славы",
+        "славе",
+        "славу",
+        "славой",
+        "света",
+        "свете",
+        "свету",
+    ];
+    WORDS.contains(&form)
+}
+
+/// The forms of a Russian first name by the surname approach: a fixed table
+/// of case endings ("марина" → "марины", "марине", "марину", "мариной").
+/// A name in another script stands for itself.
+pub(crate) fn given_forms(name: &str) -> Vec<String> {
+    let mut forms = vec![name.to_owned()];
+    if cyrillic(name) {
+        let mut decline = |stem: &str, endings: &[&str]| {
+            forms.extend(endings.iter().map(|e| format!("{stem}{e}")));
+        };
+        if let Some(stem) = name.strip_suffix("ия") {
+            decline(stem, &["ии", "ию", "ией"]);
+        } else if let Some(stem) = name.strip_suffix('а') {
+            // "и" after г, к, х and hissing consonants; "ей" for "Маришей".
+            let genitive = if stem.ends_with(['г', 'к', 'х', 'ж', 'ш', 'ч', 'щ']) {
+                "и"
+            } else {
+                "ы"
+            };
+            decline(stem, &[genitive, "е", "у", "ой", "ей"]);
+        } else if let Some(stem) = name.strip_suffix('я') {
+            decline(stem, &["и", "е", "ю", "ей"]);
+        } else if let Some(stem) = name.strip_suffix("ий") {
+            decline(stem, &["ия", "ию", "ием", "ии"]);
+        } else if let Some(stem) = name.strip_suffix(['й', 'ь']) {
+            decline(stem, &["я", "ю", "ем", "е"]);
+        } else if name
+            .chars()
+            .next_back()
+            .is_some_and(|c| !"аеёиоуыэюя-".contains(c))
+        {
+            decline(name, &["а", "у", "ом", "е"]);
+        }
+    }
+    forms
+}
+
+/// A Russian patronymic and its case forms ("сергеевна" → "сергеевны", …).
+fn patronymic_forms(word: &str) -> Vec<String> {
+    let mut forms = vec![word.to_owned()];
+    if let Some(stem) = word.strip_suffix("на") {
+        forms.extend(["ны", "не", "ну", "ной"].map(|e| format!("{stem}{e}")));
+    } else if word.ends_with("ич") {
+        forms.extend(["а", "у", "ем", "е"].map(|e| format!("{word}{e}")));
+    }
+    forms
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Case {
+    Nominative,
+    Genitive,
+    Dative,
+    Accusative,
+    Instrumental,
+    Prepositional,
+}
+
+/// A patronymic's gender, case and nominative ("мартыновны" → feminine,
+/// genitive, "мартыновна"), or `None` for no patronymic.
+fn patronymic_case(word: &str) -> Option<(bool, Case, String)> {
+    for stem in ["овн", "евн", "ичн"] {
+        if let Some(i) = word.rfind(stem) {
+            let base = &word[..i + stem.len()];
+            let case = match &word[i + stem.len()..] {
+                "а" => Case::Nominative,
+                "ы" => Case::Genitive,
+                "е" => Case::Dative,
+                "у" => Case::Accusative,
+                "ой" | "ою" => Case::Instrumental,
+                _ => return None,
+            };
+            return Some((true, case, format!("{base}а")));
+        }
+    }
+    for stem in ["ович", "евич", "ич"] {
+        if let Some(i) = word.rfind(stem) {
+            let base = &word[..i + stem.len()];
+            let case = match &word[i + stem.len()..] {
+                "" => Case::Nominative,
+                "а" => Case::Genitive,
+                "у" => Case::Dative,
+                "ем" => Case::Instrumental,
+                "е" => Case::Prepositional,
+                _ => return None,
+            };
+            return Some((false, case, base.to_owned()));
+        }
+    }
+    None
+}
+
+/// One word of a Russian name back in the nominative, by a fixed table of
+/// endings for its gender and case; a woman's surname that ends in a
+/// consonant ("Таль-Шнейдер") does not decline.
+fn decline_back(word: &str, feminine: bool, case: Case) -> String {
+    let swap = |pairs: &[(&str, &str)]| {
+        pairs.iter().find_map(|(from, to)| {
+            word.strip_suffix(from)
+                .filter(|stem| stem.chars().count() >= 2)
+                .map(|stem| format!("{stem}{to}"))
+        })
+    };
+    let hissing = |stem: &str| stem.ends_with(['г', 'к', 'х', 'ж', 'ш', 'ч', 'щ', 'ц']);
+    let soft = |stem: &str| {
+        if stem.ends_with(['а', 'е', 'и', 'о', 'у', 'ы', 'э', 'ю', 'я']) {
+            format!("{stem}й")
+        } else {
+            format!("{stem}ь")
+        }
+    };
+    const FEM_OBLIQUE: [(&str, &str); 7] = [
+        ("овой", "ова"),
+        ("евой", "ева"),
+        ("ёвой", "ёва"),
+        ("иной", "ина"),
+        ("ыной", "ына"),
+        ("ской", "ская"),
+        ("цкой", "цкая"),
+    ];
+    let declined = match (feminine, case) {
+        (_, Case::Nominative) => None,
+        (true, Case::Genitive) => swap(&FEM_OBLIQUE)
+            .or_else(|| swap(&[("ии", "ия"), ("ы", "а")]))
+            .or_else(|| {
+                let stem = word.strip_suffix('и')?;
+                Some(format!("{stem}{}", if hissing(stem) { "а" } else { "я" }))
+            }),
+        (true, Case::Dative | Case::Prepositional) => {
+            swap(&FEM_OBLIQUE).or_else(|| swap(&[("ии", "ия"), ("ье", "ья"), ("е", "а")]))
+        }
+        (true, Case::Accusative) => swap(&[
+            ("ову", "ова"),
+            ("еву", "ева"),
+            ("ёву", "ёва"),
+            ("ину", "ина"),
+            ("ыну", "ына"),
+            ("скую", "ская"),
+            ("цкую", "цкая"),
+            ("ию", "ия"),
+            ("у", "а"),
+            ("ю", "я"),
+        ]),
+        (true, Case::Instrumental) => swap(&FEM_OBLIQUE)
+            .or_else(|| swap(&[("ией", "ия"), ("ой", "а")]))
+            .or_else(|| {
+                let stem = word.strip_suffix("ей")?;
+                Some(format!("{stem}{}", if hissing(stem) { "а" } else { "я" }))
+            }),
+        (false, Case::Genitive | Case::Accusative) => {
+            swap(&[("ского", "ский"), ("цкого", "цкий"), ("ия", "ий")])
+                .or_else(|| word.strip_suffix('я').map(soft))
+                .or_else(|| swap(&[("а", "")]))
+        }
+        (false, Case::Dative) => swap(&[("скому", "ский"), ("цкому", "цкий"), ("ию", "ий")])
+            .or_else(|| word.strip_suffix('ю').map(soft))
+            .or_else(|| swap(&[("у", "")])),
+        (false, Case::Instrumental) => swap(&[
+            ("ским", "ский"),
+            ("цким", "цкий"),
+            ("овым", "ов"),
+            ("евым", "ев"),
+            ("ёвым", "ёв"),
+            ("иным", "ин"),
+            ("ыным", "ын"),
+            ("ием", "ий"),
+        ])
+        .or_else(|| word.strip_suffix("ем").map(soft))
+        .or_else(|| swap(&[("ом", "")])),
+        (false, Case::Prepositional) => {
+            swap(&[("ском", "ский"), ("цком", "цкий"), ("ии", "ий")]).or_else(|| swap(&[("е", "")]))
+        }
+    };
+    declined.unwrap_or_else(|| word.to_owned())
+}
+
+/// A Russian full name with an inflected patronymic, back in the nominative
+/// ("эльзы-руты мартыновны таль-шнейдер" → "эльза-рута мартыновна
+/// таль-шнейдер"); `None` when it has no patronymic or is nominative.
+pub(crate) fn nominative(words: &[String]) -> Option<Vec<String>> {
+    // Where the layouts put it: first name + patronymic + surname, or
+    // surname + first name + patronymic. A surname shaped like one
+    // ("Якубович") stands first or last.
+    let p = [1, 2].into_iter().chain(0..words.len()).find(|&i| {
+        words
+            .get(i)
+            .is_some_and(|w| patronymic_like(w) && patronymic_case(w).is_some())
+    })?;
+    let (feminine, case, lemma) = patronymic_case(&words[p])?;
+    (case != Case::Nominative).then(|| {
+        words
+            .iter()
+            .enumerate()
+            .map(|(i, word)| {
+                if i == p {
+                    lemma.clone()
+                } else {
+                    word.split('-')
+                        .map(|part| decline_back(part, feminine, case))
+                        .collect::<Vec<_>>()
+                        .join("-")
+                }
+            })
+            .collect()
+    })
+}
+
+/// The forms of `surname` that name its own bearer: a feminine surname's
+/// masculine forms ("Павлов", "Павловым") name a relative, so they never
+/// link to her, though they are still proposed.
+fn own_surname_forms(surname: &str) -> Vec<String> {
+    // With a particle: the bare surname's own forms, with it and without.
+    if let Some((particles, base)) = surname.rsplit_once(' ') {
+        let base = own_surname_forms(base);
+        let mut forms: Vec<String> = base.iter().map(|f| format!("{particles} {f}")).collect();
+        forms.extend(base);
+        return forms;
+    }
+    let all = surname_forms(surname);
+    if !cyrillic(surname) {
+        return all;
+    }
+    let feminine = ["ова", "ева", "ёва", "ина", "ына"]
+        .iter()
+        .any(|s| surname.ends_with(s));
+    if !feminine {
+        return all;
+    }
+    let stem = &surname[..surname.len() - 'а'.len_utf8()];
+    all.into_iter()
+        .filter(|form| {
+            form == surname || *form == format!("{stem}ой") || *form == format!("{stem}у")
+        })
+        .collect()
+}
+
+/// A wording read as one of the forms propagation knows.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Form {
+    /// One name word, with a title before it or not.
+    Word { word: String, titled: bool },
+    /// First name + patronymic ("Марина Сергеевна").
+    Patronymic { first: String, patronymic: String },
+    /// A surname with initials before or after it ("Павловой М. С.").
+    Initials {
+        surname: String,
+        initials: Vec<char>,
+    },
+    /// Two or three initials alone, as a signature ("E. N.", "Я. В."): the
+    /// first name's and the patronymic's or middle name's, the surname's, or
+    /// all three, in order.
+    InitialsOnly(Vec<char>),
+    /// A whole name in another wording than a known one: a first name and
+    /// a surname, with a patronymic between them or not, in either order
+    /// ("Лидией Игоревной Брюн", "Лея Аркадьевна Ли-Вельт" beside "Лея
+    /// Ли-Вельт"). Only propagation reads it: two or three lowercase words.
+    Whole(Vec<String>),
+}
+
+/// `wording` as a [`Form::Whole`]: two or three name words, no initials and
+/// no title before them.
+fn parse_whole(wording: &str) -> Option<Form> {
+    let wording = &crate::view::unwrapped(wording);
+    let cased = name_words_cased(wording);
+    let titled = wording.split_whitespace().count() != cased.len();
+    let words = merge_particles(&cased);
+    let name = |w: &String| {
+        w.chars().filter(|c| c.is_alphabetic()).count() > 1
+            && w.chars()
+                .all(|c| c.is_alphabetic() || matches!(c, '-' | '\'' | '’' | ' '))
+    };
+    (!titled && (2..=3).contains(&words.len()) && words.iter().all(name))
+        .then_some(Form::Whole(words))
+}
+
+/// Initials in one word ("м.с", "m"), or `None` for a name word.
+fn initials_of(word: &str) -> Option<Vec<char>> {
+    let parts: Vec<_> = word.split('.').filter(|p| !p.is_empty()).collect();
+    (!parts.is_empty() && parts.iter().all(|p| p.chars().count() == 1))
+        .then(|| parts.iter().filter_map(|p| p.chars().next()).collect())
+}
+
+pub(crate) fn parse_form(wording: &str) -> Option<Form> {
+    // A word split by a line-end hyphen reads whole ("Верес-\nтова").
+    let wording = &crate::view::unwrapped(wording);
+    let titled = wording.split_whitespace().next().is_some_and(|first| {
+        TITLES.contains(
+            &first
+                .trim_matches(|c: char| !c.is_alphabetic())
+                .to_lowercase()
+                .as_str(),
+        )
+    });
+    // As written, so a lowercase particle stays apart from a given name.
+    let cased = name_words_cased(wording);
+    let words: Vec<String> = cased.iter().map(|w| w.to_lowercase()).collect();
+    let parsed: Vec<_> = words.iter().map(|w| initials_of(w)).collect();
+    let names: Vec<&String> = cased
+        .iter()
+        .zip(&parsed)
+        .filter(|(_, i)| i.is_none())
+        .map(|(w, _)| w)
+        .collect();
+    if names.iter().any(|w| {
+        !w.chars()
+            .all(|c| c.is_alphabetic() || matches!(c, '-' | '\'' | '’'))
+    }) {
+        return None;
+    }
+    let initials: Vec<char> = parsed.iter().flatten().flatten().copied().collect();
+    // A particle is part of the surname after it ("де Лаваль").
+    let names = merge_particles(&names);
+    match (names.as_slice(), initials.len()) {
+        ([word], 0) => Some(Form::Word {
+            word: word.clone(),
+            titled,
+        }),
+        ([first, second], 0) if !titled && patronymic_like(second) => Some(Form::Patronymic {
+            first: first.clone(),
+            patronymic: second.clone(),
+        }),
+        ([], 2..=3) => Some(Form::InitialsOnly(initials)),
+        ([surname], 1..=2)
+            if parsed.first().is_some_and(Option::is_none)
+                || parsed.last().is_some_and(Option::is_none) =>
+        {
+            Some(Form::Initials {
+                surname: surname.clone(),
+                initials,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// A patronymic in any case ("сергеевны", "андреевичу").
+pub(crate) fn patronymic_like(word: &str) -> bool {
+    let stems = ["овн", "евн", "ичн", "ович", "евич"];
+    cyrillic(word)
+        && word.char_indices().any(|(i, _)| {
+            stems.iter().any(|s| {
+                word[i..].starts_with(s)
+                    && word[i + s.len()..].chars().count() <= 3
+                    && word[..i].chars().count() >= 2
+            })
+        })
+}
+
+/// One person a form may stand for, with the forms of their names.
+struct Person {
+    owner: u64,
+    surname: String,
+    /// Given names in order: the first name, then a middle name or patronymic.
+    given: Vec<String>,
+    /// A full name, so a form may join it; a surname with initials only
+    /// blocks ("Петров И.И." beside "Петрова Марина": "Петрову" is either).
+    target: bool,
+    surname_forms: HashSet<String>,
+    own_surname_forms: HashSet<String>,
+    /// The first name's forms and its nicknames' (full names only).
+    first_forms: HashSet<String>,
+    patronymic_forms: HashSet<String>,
+}
+impl Person {
+    /// Whether `words` (a [`Form::Whole`]) are this person's first name and
+    /// own surname, with their patronymic between them or none; a Russian
+    /// name may also put the surname first ("Брюн Лидии Игоревне"). A person
+    /// known without a patronymic takes any Russian one there ("Лея
+    /// Аркадьевна Ли-Вельт" for "Лея Ли-Вельт"). Each word is this
+    /// person's, so two people side by side ("Лидией Игоревной Ренц") are
+    /// never one.
+    fn named_whole(&self, words: &[String]) -> bool {
+        let first = |w: &String| self.first_forms.contains(w);
+        let surname = |w: &String| self.own_surname_forms.contains(w);
+        let middle = |w: &String| {
+            self.patronymic_forms.contains(w) || (self.given.len() == 1 && patronymic_like(w))
+        };
+        let russian = words.iter().all(|w| cyrillic(w));
+        match words {
+            [a, b] => first(a) && surname(b) || russian && surname(a) && first(b),
+            [a, b, c] => {
+                first(a) && middle(b) && surname(c)
+                    || russian && surname(a) && first(b) && middle(c)
+            }
+            _ => false,
+        }
+    }
+    /// `written`: the name came inflected and was read in the nominative.
+    /// Its forms are then only the nominative and the words as written: the
+    /// case table read backwards is a guess, so "Павлову Дмитрию
+    /// Андреевичу" stands for "Павлов" and "Павлову", never for "Павлова",
+    /// which is her nominative beside "Павлова Марина Сергеевна".
+    fn new(
+        owner: u64,
+        surname: String,
+        given: Vec<String>,
+        target: bool,
+        written: crate::identities::Written,
+    ) -> Self {
+        if let Some((written_surname, written_given)) = written {
+            let pair = |base: Option<&String>, as_written: Option<&String>| -> HashSet<String> {
+                base.into_iter().chain(as_written).cloned().collect()
+            };
+            let mut first_forms = pair(given.first(), written_given.first());
+            if let Some(first) = given.first() {
+                first_forms.extend(nicknames(first).iter().map(|n| (*n).to_owned()));
+            }
+            let surnames = pair(Some(&surname), Some(&written_surname));
+            return Self {
+                owner,
+                patronymic_forms: pair(given.get(1), written_given.get(1)),
+                first_forms,
+                own_surname_forms: surnames.clone(),
+                surname_forms: surnames,
+                surname,
+                given,
+                target,
+            };
+        }
+        let first_forms = match given.first() {
+            Some(first) if target => given_forms(first)
+                .into_iter()
+                .chain(nicknames(first).iter().flat_map(|n| given_forms(n)))
+                .collect(),
+            _ => HashSet::new(),
+        };
+        let patronymic_forms = match given.as_slice() {
+            [_, second] if target => patronymic_forms(second).into_iter().collect(),
+            _ => HashSet::new(),
+        };
+        // A woman's surname that ends in a consonant does not decline.
+        let feminine = given.get(1).is_some_and(|p| p.ends_with("на"));
+        let own_surname_forms = if feminine
+            && cyrillic(&surname)
+            && surname
+                .chars()
+                .next_back()
+                .is_some_and(|c| !"аеёиоуыэюяйь".contains(c))
+        {
+            HashSet::from([surname.clone()])
+        } else {
+            own_surname_forms(&surname).into_iter().collect()
+        };
+        Self {
+            owner,
+            surname_forms: surname_forms(&surname).into_iter().collect(),
+            own_surname_forms,
+            surname,
+            given,
+            target,
+            first_forms,
+            patronymic_forms,
+        }
+    }
+}
+
+/// The people of a document that forms are matched against.
+pub(crate) struct People(Vec<Person>);
+
+/// Who a form may stand for.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Candidates {
+    /// Owners the form names in a matching gender and initials.
+    pub(crate) link: BTreeSet<u64>,
+    /// Some person has it as a form, whether or not it links.
+    pub(crate) proposed: bool,
+    /// The one full name it joins.
+    pub(crate) target: Option<u64>,
+}
+
+impl People {
+    /// `(owner, wording)` of every known person name: full names are
+    /// targets, a surname with initials only a candidate.
+    pub(crate) fn new<'a>(names: impl IntoIterator<Item = (u64, &'a str)>) -> Self {
+        let mut people = Vec::new();
+        for (owner, wording) in names {
+            if let Some((surname, given, written)) = split_full_name_inflected(wording) {
+                people.push(Person::new(owner, surname, given, true, written));
+            } else if let Some(Form::Initials { surname, initials }) = parse_form(wording) {
+                let given = initials.iter().map(char::to_string).collect();
+                people.push(Person::new(owner, surname, given, false, None));
+            }
+        }
+        Self(people)
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// Whether `owner` is a full name's identity, which forms may join.
+    pub(crate) fn is_target(&self, owner: u64) -> bool {
+        self.0.iter().any(|p| p.owner == owner && p.target)
+    }
+    pub(crate) fn candidates(&self, form: &Form) -> Candidates {
+        let mut found = Candidates::default();
+        for person in &self.0 {
+            // A name with initials does not block its own form.
+            if let Form::Initials { surname, initials } = form
+                && !person.target
+                && person.surname == *surname
+                && person
+                    .given
+                    .iter()
+                    .map(|g| g.chars().next())
+                    .eq(initials.iter().map(|c| Some(*c)))
+            {
+                continue;
+            }
+            let (links, proposes) = match form {
+                Form::Word { word, titled } => {
+                    let first = !titled && person.first_forms.contains(word);
+                    (
+                        first || person.own_surname_forms.contains(word),
+                        first || person.surname_forms.contains(word),
+                    )
+                }
+                Form::Patronymic { first, patronymic } => {
+                    let both = person.first_forms.contains(first)
+                        && person.patronymic_forms.contains(patronymic);
+                    (both, both)
+                }
+                Form::Initials { surname, initials } => {
+                    let named = person.surname_forms.contains(surname);
+                    // Every initial matches, in order; one that matches a
+                    // different given name breaks the link.
+                    let matching = initials.len() <= person.given.len()
+                        && initials
+                            .iter()
+                            .zip(&person.given)
+                            .all(|(i, name)| name.starts_with(*i));
+                    (
+                        matching && person.own_surname_forms.contains(surname),
+                        named,
+                    )
+                }
+                Form::Whole(words) => {
+                    let whole = person.named_whole(words);
+                    (whole, whole)
+                }
+                Form::InitialsOnly(initials) => {
+                    let first = |name: &String| name.chars().next();
+                    let given: Vec<_> = person.given.iter().map(first).collect();
+                    let surname = first(&person.surname);
+                    let spelled: Vec<_> = initials.iter().map(|c| Some(*c)).collect();
+                    // A name with initials ("Y. Quill") matches too, so it
+                    // blocks a link, though it never becomes a target.
+                    let matching = match spelled.as_slice() {
+                        [a, b] => {
+                            given.len() >= 2 && [given[0], given[1]] == [*a, *b]
+                                || given.first() == Some(a) && surname == *b
+                        }
+                        [a, b, c] => {
+                            given.len() >= 2 && [given[0], given[1], surname] == [*a, *b, *c]
+                        }
+                        _ => false,
+                    };
+                    (matching, matching)
+                }
+            };
+            if links {
+                found.link.insert(person.owner);
+            }
+            // A surname with initials alone proposes nothing: only full
+            // names propagate.
+            found.proposed |= person.target && (proposes || links);
+        }
+        if let [owner] = found.link.iter().copied().collect::<Vec<_>>()[..] {
+            found.target = self
+                .0
+                .iter()
+                .any(|p| p.owner == owner && p.target)
+                .then_some(owner);
+        }
+        found
+    }
+    /// Whether `wording` is a form of the full name `full`, linked or not.
+    pub(crate) fn form_of(wording: &str, full: &str) -> bool {
+        parse_form(wording).is_some_and(|form| {
+            let people = Self::new([(0, full)]);
+            people.0.first().is_some_and(|p| p.target) && people.candidates(&form).proposed
+        })
+    }
+}
+
+/// `wording` as a form; `surname`: found only after a title, so a word is
+/// a surname, never a first name.
+fn form_in_context(wording: &str, surname: bool) -> Option<Form> {
+    match parse_form(wording).or_else(|| parse_whole(wording))? {
+        Form::Word { word, .. } if surname => Some(Form::Word { word, titled: true }),
+        form => Some(form),
+    }
+}
+
+static TOKEN: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\p{L}+(?:['’-]\p{Lu}\p{L}*)*").expect("name token"));
+
+/// Whether the text before `start` on its line ends a sentence: a line
+/// start, a list marker, a table cell or sentence punctuation.
+/// A courtesy title before a surname, in any case; lowercase "miss" is the
+/// verb ("a near miss").
+fn is_title(word: &str) -> bool {
+    word != "miss" && TITLES.contains(&word.to_lowercase().as_str())
+}
+
+pub(crate) fn sentence_start(source: &str, start: usize) -> bool {
+    let line = &source[source[..start].rfind('\n').map_or(0, |i| i + 1)..start];
+    let before = line.trim_end_matches(|c: char| c.is_whitespace() || "*_\"'«“„‘([".contains(c));
+    // "Mr. Hill": a title's period ends no sentence.
+    let titled = before.strip_suffix('.').is_some_and(|b| {
+        let word = b
+            .rsplit(|c: char| !c.is_alphabetic())
+            .next()
+            .unwrap_or_default();
+        is_title(word)
+    });
+    if titled {
+        return false;
+    }
+    let marker = before.trim_start();
+    marker.is_empty()
+        || matches!(marker, "-" | "+" | ">")
+        || marker.trim_start_matches('#').is_empty()
+        || marker
+            .strip_suffix(['.', ')'])
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        || before.ends_with(['.', '!', '?', '…', '|'])
+}
+
+/// Whether `range` touches `_`, `/`, `@` or `\\`: part of an identifier, a
+/// path or an address ("x.invalid/Alice_Morgan").
+pub(crate) fn glued(source: &str, range: &Range<usize>) -> bool {
+    let glue = |c: Option<char>| c.is_some_and(|c| "_/@\\".contains(c));
+    glue(source[..range.start].chars().next_back()) || glue(source[range.end..].chars().next())
+}
+
+/// Whether `range` can be proposed: plain text outside protected syntax and
+/// existing mentions, whole words, and not glued to `_`, `/`, `@` or `\`,
+/// where it is part of an identifier, a path or an address
+/// ("x.invalid/Alice_Morgan").
+fn usable_span(
+    source: &str,
+    range: &Range<usize>,
+    protected: &[Range<usize>],
+    covered: &[Range<usize>],
+) -> bool {
+    let text = &source[range.clone()];
+    // A line break only where a line-end hyphen splits a word in it.
+    !glued(source, range)
+        && safe_span(&crate::view::unwrapped(text))
+        && !intersects(protected, range)
+        && !intersects(covered, range)
+        && exact_boundary(source, range, text)
+}
+
+/// Repeats of known full names in another letter case ("iara veldune",
+/// "IARA VELDUNE" of "Iara Veldune"), outside `covered`: the same name, so
+/// the same identity. Only names of two words or more, never a lone word,
+/// and not one made of ordinary words only ("Rose Hill", "the rose hill").
+/// Each with the index in `names` of the name it repeats.
+fn case_repeats<'a>(
+    source: &'a str,
+    names: &[&str],
+    covered: &[Range<usize>],
+) -> Vec<(&'a str, usize)> {
+    let key = |text: &str| {
+        text.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let mut usable: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| {
+            let words = name_words(name);
+            words.len() >= 2 && !words.iter().all(|w| common_word(w))
+        })
+        .collect();
+    if usable.is_empty() {
+        return Vec::new();
+    }
+    // Longest first: a longer name ("Iara Veldune Smith") is never cut to
+    // a shorter one it starts with.
+    usable.sort_by_key(|name| std::cmp::Reverse(name.chars().count()));
+    let pattern = usable
+        .iter()
+        .map(|name| {
+            name.split_whitespace()
+                .map(regex::escape)
+                .collect::<Vec<_>>()
+                .join(r"[ \t]+")
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    let Ok(regex) = regex::RegexBuilder::new(&pattern)
+        .case_insensitive(true)
+        .build()
+    else {
+        return Vec::new();
+    };
+    let protected = protected_syntax(source);
+    regex
+        .find_iter(source)
+        .filter(|m| !names.contains(&m.as_str()))
+        .filter(|m| usable_span(source, &m.range(), &protected, covered))
+        .filter_map(|m| {
+            let found = key(m.as_str());
+            let index = names.iter().position(|name| key(name) == found)?;
+            Some((m.as_str(), index))
+        })
+        .collect()
+}
+
+/// Spans of forms in `source`, outside `covered` and protected syntax, with
+/// whether each is an ordinary word too. Longer forms win at each place. A
+/// whole name may take in parts of `covered` that are outside `fixed` and
+/// lie inside it: a model's "Брюн" in "Лидией Игоревной Брюн" (#391). Both
+/// are sorted and merged, `fixed` within `covered`.
+fn find_forms(
+    source: &str,
+    people: &People,
+    covered: &[Range<usize>],
+    fixed: &[Range<usize>],
+) -> Vec<(Range<usize>, bool, bool)> {
+    let protected = protected_syntax(source);
+    // A word split by a line-end hyphen is one token, as the view reads it:
+    // "Верес-\nтова Дарья Ильинична" is a whole name (#388).
+    let mut tokens: Vec<Range<usize>> = Vec::new();
+    for found in TOKEN.find_iter(source) {
+        match tokens.last_mut() {
+            Some(last)
+                if crate::view::line_end_hyphen(&source[last.end..])
+                    .is_some_and(|len| last.end + len == found.start()) =>
+            {
+                last.end = found.end();
+            }
+            _ => tokens.push(found.range()),
+        }
+    }
+    let capital = |k: usize| {
+        tokens.get(k).is_some_and(|r| {
+            source[r.clone()]
+                .chars()
+                .next()
+                .is_some_and(char::is_uppercase)
+        })
+    };
+    let blank = |from: usize, to: usize| {
+        from <= to && source[from..to].chars().all(|c| c == ' ' || c == '\t')
+    };
+    // A surname's particle, as read: "v-\nan der Berg" has "van".
+    let particle = |t: &Range<usize>| is_particle(&crate::view::unwrapped(&source[t.clone()]));
+    // An initial: one capital letter and its period.
+    let initial = |k: usize| {
+        capital(k)
+            && source[tokens[k].clone()].chars().count() == 1
+            && source[tokens[k].end..].starts_with('.')
+    };
+    // A name word: a capital and more letters.
+    let word = |k: usize| capital(k) && source[tokens[k].clone()].chars().count() > 1;
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let start = tokens[i].start;
+        // Candidate spans at `i`, longest first, each with the token after it.
+        // `true`: a surname after a title, which stays outside the span.
+        let mut tries: Vec<(Range<usize>, usize, bool)> = Vec::new();
+        if initial(i) {
+            // Initials before the surname: "М. С. Павлова", "M. Bennett".
+            let last = if initial(i + 1) && blank(tokens[i].end + 1, tokens[i + 1].start) {
+                i + 1
+            } else {
+                i
+            };
+            // The surname may carry particles: "Г. Я. де Лаваль".
+            let mut surname = last + 1;
+            while surname < last + 3
+                && tokens.get(surname).is_some_and(particle)
+                && tokens.get(surname + 1).is_some_and(|next| {
+                    tokens[surname].end < next.start && blank(tokens[surname].end, next.start)
+                })
+            {
+                surname += 1;
+            }
+            if word(surname) && blank(tokens[last].end + 1, tokens[last + 1].start) {
+                tries.push((start..tokens[surname].end, surname + 1, false));
+            }
+            // Initials alone, as a signature: "E. N.", "Я. В.". The whole
+            // run or nothing: "J. S. X." is not "J. S." with a stray "X.".
+            let mut run = i;
+            while run < i + 3
+                && initial(run + 1)
+                && blank(tokens[run].end + 1, tokens[run + 1].start)
+            {
+                run += 1;
+            }
+            // Right after a name word they are that name's initials
+            // ("Ветлин Н. О."), not a signature of their own.
+            let after_name = i > 0
+                && word(i - 1)
+                && blank(tokens[i - 1].end, start)
+                && (intersects(covered, &tokens[i - 1])
+                    || parse_form(&source[tokens[i - 1].clone()])
+                        .is_some_and(|form| people.candidates(&form).proposed));
+            if (1..=2).contains(&(run - i)) && !after_name {
+                tries.push((start..tokens[run].end + 1, run + 1, false));
+            }
+        } else {
+            // A surname with its particles: "де Лаваль", "van der Berg".
+            let mut last = i;
+            while last < i + 2
+                && particle(&tokens[last])
+                && tokens.get(last + 1).is_some_and(|next| {
+                    tokens[last].end < next.start && blank(tokens[last].end, next.start)
+                })
+            {
+                last += 1;
+            }
+            if last > i && word(last) {
+                // With initials after it first: "де Лаваль Г. Я.".
+                if initial(last + 1)
+                    && tokens[last].end < tokens[last + 1].start
+                    && blank(tokens[last].end, tokens[last + 1].start)
+                {
+                    if initial(last + 2) && blank(tokens[last + 1].end + 1, tokens[last + 2].start)
+                    {
+                        tries.push((start..tokens[last + 2].end + 1, last + 3, false));
+                    }
+                    tries.push((start..tokens[last + 1].end + 1, last + 2, false));
+                }
+                tries.push((start..tokens[last].end, last + 1, false));
+            }
+            // As read, so a title split over lines stays a title.
+            let title = crate::view::unwrapped(&source[tokens[i].clone()]);
+            // Lowercase "miss" is the verb.
+            let titled = is_title(&title);
+            // A whole name, before its parts: "Лидией Игоревной Брюн", not
+            // "Лидией Игоревной" and "Брюн" (#391).
+            // The surname may carry particles: "Генриетта Яновна де Лаваль".
+            let spaced = |k: usize| {
+                tokens.get(k + 1).is_some_and(|next| {
+                    tokens[k].end < next.start && blank(tokens[k].end, next.start)
+                })
+            };
+            let surname_from = |k: usize| {
+                let mut last = k;
+                while last < k + 2 && tokens.get(last).is_some_and(particle) && spaced(last) {
+                    last += 1;
+                }
+                word(last).then_some(last)
+            };
+            if word(i)
+                && spaced(i)
+                && let Some(second) = surname_from(i + 1)
+            {
+                if second == i + 1
+                    && spaced(i + 1)
+                    && let Some(third) = surname_from(i + 2)
+                {
+                    tries.push((start..tokens[third].end, third + 1, false));
+                }
+                // "Генриетта де Лаваль"; two plain words are tried below.
+                if second > i + 1 {
+                    tries.push((start..tokens[second].end, second + 1, false));
+                }
+            }
+            // Initials after it: "Павловой М. С.", "Павлова М.С.".
+            if word(i)
+                && initial(i + 1)
+                && tokens[i].end < tokens[i + 1].start
+                && blank(tokens[i].end, tokens[i + 1].start)
+            {
+                if initial(i + 2) && blank(tokens[i + 1].end + 1, tokens[i + 2].start) {
+                    tries.push((start..tokens[i + 2].end + 1, i + 3, false));
+                }
+                tries.push((start..tokens[i + 1].end + 1, i + 2, false));
+            }
+            // A title in any case and a surname ("Ms Raman", "dr. Raman"):
+            // the surname alone, the title outside the span as the guide
+            // keeps it; or first name + patronymic.
+            if (titled || word(i)) && word(i + 1) {
+                let gap =
+                    tokens[i].end + usize::from(titled && source[tokens[i].end..].starts_with('.'));
+                if gap < tokens[i + 1].start && blank(gap, tokens[i + 1].start) {
+                    if titled {
+                        tries.push((tokens[i + 1].clone(), i + 2, true));
+                    } else {
+                        tries.push((start..tokens[i + 1].end, i + 2, false));
+                    }
+                }
+            }
+            if word(i) {
+                tries.push((tokens[i].clone(), i + 1, false));
+            }
+        }
+        let accepted = tries.into_iter().find_map(|(range, next, after_title)| {
+            let text = &source[range.clone()];
+            // After a title the word is a surname, never a first name.
+            let form = match parse_form(text).or_else(|| parse_whole(text))? {
+                Form::Word { word, .. } if after_title => Form::Word { word, titled: true },
+                _ if after_title => return None,
+                form => form,
+            };
+            let usable = if matches!(form, Form::Whole(_)) {
+                usable_span(source, &range, &protected, fixed)
+                    && covered
+                        .iter()
+                        .filter(|c| c.start < range.end && range.start < c.end)
+                        .all(|c| range.start <= c.start && c.end <= range.end)
+                    && people.candidates(&form).proposed
+                    // The wording is proposed wherever it appears: never
+                    // across what stays as it is, such as a kept "Брюн".
+                    && source.match_indices(text).all(|(at, _)| {
+                        let found = at..at + text.len();
+                        fixed.iter().all(|f| {
+                            *f == found || f.end <= found.start || found.end <= f.start
+                        })
+                    })
+            } else {
+                usable_span(source, &range, &protected, covered)
+                    && people.candidates(&form).proposed
+            };
+            let common = matches!(&form, Form::Word { word, .. } if common_word(word));
+            (usable && !(common && !after_title && sentence_start(source, range.start)))
+                .then_some((range, common, next, after_title))
+        });
+        match accepted {
+            Some((range, common, next, after_title)) => {
+                found.push((range, common, after_title));
+                i = next;
+            }
+            None => i += 1,
+        }
+    }
+    found
+}
+
+/// Spans of the forms of full person names `names` in `source`, found as
+/// for a name in the document: the user's Always list (ADR 0092) proposes
+/// a listed person's forms where the full name never appears, so no
+/// identity carries a form's context. A form that is also an ordinary word
+/// ("Hill") is left out: without the review's mid-sentence restriction it
+/// would spread to the word itself.
+pub fn person_forms_in(source: &str, names: &[&str]) -> Vec<Range<usize>> {
+    let people = People::new(names.iter().enumerate().map(|(i, n)| (i as u64, *n)));
+    if people.is_empty() {
+        return Vec::new();
+    }
+    find_forms(source, &people, &[], &[])
+        .into_iter()
+        .filter(|(_, common, _)| !common)
+        .map(|(range, ..)| range)
+        .collect()
+}
+
+impl Review {
+    /// Full person names that propagate, as `(identity, wording)`: proposed
+    /// (not kept) or applied. With a surname and initials, which only block.
+    pub(super) fn known_people(&self) -> Vec<(u64, Arc<str>)> {
+        let mut names: Vec<(u64, Arc<str>)> = self
+            .variants()
+            .iter()
+            .filter(|v| v.category == Category::Person && !v.kept && !v.mentions.is_empty())
+            .filter_map(|v| Some((self.variant_identity(v.id)?, v.original.clone())))
+            .collect();
+        names.extend(self.applied().iter().filter_map(|a| {
+            let identity = a.step.identity;
+            (self.identity(identity)?.category == Category::Person)
+                .then(|| (identity, a.step.original_shared().clone()))
+        }));
+        let mut seen = HashSet::new();
+        names.retain(|(id, wording)| seen.insert((*id, wording.clone())));
+        names
+    }
+    fn people(&self) -> People {
+        let names = self.known_people();
+        People::new(names.iter().map(|(id, w)| (*id, w.as_ref())))
+    }
+    /// The identity a person wording joins: its one candidate full name.
+    pub(super) fn propagation_target(&self, wording: &str) -> Option<u64> {
+        let form = parse_form(wording)?;
+        self.people().candidates(&form).target
+    }
+    /// Seed a form found by propagation: in its one candidate's identity,
+    /// or an identity of its own.
+    pub(super) fn seed_form(&mut self, wording: &str, target: Option<u64>) -> u64 {
+        let id = self.add_seed_linked(wording, Category::Person, target);
+        let seeded = self.variant(id).map(|v| v.identity);
+        if let Some(variant) = self.candidates.variant_mut(id) {
+            variant.managed = true;
+            variant.own = (seeded == Some(id)).then_some(id);
+        }
+        id
+    }
+    /// Propose the forms of every known full name found outside existing
+    /// mentions, and link earlier ones again. `marked`: a manual mark of a
+    /// full name did it, as one undo step that withdraws the new forms and
+    /// the links. Returns the variants added.
+    pub(super) fn propagate(&mut self, source: &str, marked: bool) -> Vec<u64> {
+        // Mentions of the seeds so far, so a form inside a longer wording
+        // stays part of it.
+        self.refresh(source);
+        let people = self.people();
+        self.relink_forms(&people, marked);
+        if people.is_empty() {
+            return Vec::new();
+        }
+        // A scan's one-word form of a known name that is also an ordinary
+        // word ("Grant") counts only capitalised mid-sentence, whoever
+        // proposed it; a mark by hand lifts that, and a case's or restored
+        // wording keeps every mention. Only a scan sets it, so no undo step
+        // changes a variant's own flag.
+        let ordinary: Vec<u64> = self
+            .variants()
+            .iter()
+            .filter(|_| !marked)
+            .filter(|v| {
+                v.category == Category::Person && v.detected && v.priority == 0 && !v.mid_sentence
+            })
+            .filter(|v| match parse_form(&v.original) {
+                Some(form @ Form::Word { titled: false, .. }) => {
+                    matches!(&form, Form::Word { word, .. } if common_word(word))
+                        && people.candidates(&form).proposed
+                }
+                _ => false,
+            })
+            .map(|v| v.id)
+            .collect();
+        if !ordinary.is_empty() {
+            for id in ordinary {
+                if let Some(variant) = self.candidates.variant_mut(id) {
+                    variant.mid_sentence = true;
+                }
+            }
+            self.refresh(source);
+        }
+        // A person proposal the user has not kept may become part of a
+        // whole name around it; anything else stays as it is.
+        // Not one the user kept, marked or moved to an identity.
+        let part = |c: &&super::Candidate| {
+            self.variant(c.variant).is_some_and(|v| {
+                v.category == Category::Person
+                    && !v.kept
+                    && v.priority == 0
+                    && !self.identities.reassigned(v.id)
+            })
+        };
+        let mut fixed: Vec<Range<usize>> = (self.candidates().iter())
+            .filter(|c| !part(c))
+            .map(|c| c.range.clone())
+            .chain(self.applied().iter().map(|a| a.range.clone()))
+            .chain(self.tracking.exclusions.iter().map(|e| e.range.clone()))
+            .collect();
+        let mut covered = fixed.clone();
+        covered.extend(
+            (self.candidates().iter())
+                .filter(part)
+                .map(|c| c.range.clone()),
+        );
+        let merge = |spans: &mut Vec<Range<usize>>| {
+            spans.sort_by_key(|r| r.start);
+            let mut merged: Vec<Range<usize>> = Vec::with_capacity(spans.len());
+            for span in spans.drain(..) {
+                match merged.last_mut() {
+                    Some(last) if span.start < last.end => last.end = last.end.max(span.end),
+                    _ => merged.push(span),
+                }
+            }
+            *spans = merged;
+        };
+        merge(&mut fixed);
+        merge(&mut covered);
+        // Each wording once; a surname when every place it was found
+        // follows a title ("Mr Paul": James Paul, not Paul Smith).
+        let mut found: Vec<(&str, bool, bool)> = Vec::new();
+        for (range, common, after_title) in find_forms(source, &people, &covered, &fixed) {
+            let wording = &source[range];
+            match found.iter_mut().find(|(w, ..)| *w == wording) {
+                Some((_, _, surname)) => *surname &= after_title,
+                None => found.push((wording, common, after_title)),
+            }
+        }
+        let mut added = Vec::new();
+        for (wording, common, surname) in found {
+            if self.candidates.by_original(wording).is_some() {
+                continue;
+            }
+            let target =
+                form_in_context(wording, surname).and_then(|form| people.candidates(&form).target);
+            let id = self.seed_form(wording, target);
+            if let Some(variant) = self.candidates.variant_mut(id) {
+                variant.recognizer = Some(Recognizer::Propagation);
+                variant.mid_sentence = common;
+                variant.surname = surname;
+                variant.keep_default = marked;
+            }
+            if marked {
+                self.set_kept(id, false);
+            }
+            added.push(id);
+        }
+        // A full name repeated in another letter case joins it by
+        // normalization, as any case-only respelling does.
+        let names: Vec<_> = self
+            .known_people()
+            .into_iter()
+            .filter(|(_, w)| crate::identities::split_full_name(w).is_some())
+            .collect();
+        let wordings: Vec<&str> = names.iter().map(|(_, w)| w.as_ref()).collect();
+        let repeats: Vec<(String, u64)> = case_repeats(source, &wordings, &covered)
+            .into_iter()
+            .map(|(wording, index)| (wording.to_owned(), names[index].0))
+            .collect();
+        for (wording, owner) in repeats {
+            if self.candidates.by_original(&wording).is_some() {
+                continue;
+            }
+            // Into the name's identity now, even after a merge moved it.
+            self.identities
+                .remember_normalized(&wording, Category::Person, owner);
+            let id = self.add_seed(&wording, Category::Person);
+            if let Some(variant) = self.candidates.variant_mut(id) {
+                variant.recognizer = Some(Recognizer::Propagation);
+                variant.keep_default = marked;
+            }
+            if marked {
+                self.set_kept(id, false);
+            }
+            added.push(id);
+        }
+        if marked {
+            self.refresh(source);
+        }
+        added
+    }
+    /// Link forms again as names come and go: a form joins its one
+    /// candidate full name, and with none (another person shares it, or the
+    /// name is gone) returns to an identity of its own. A scan's lone
+    /// proposal that is a form joins too. The user's links stay, and so does
+    /// a form that replaced text already. `marked`: as one undo step.
+    fn relink_forms(&mut self, people: &People, marked: bool) {
+        let moves: Vec<(u64, Option<u64>)> = self
+            .variants()
+            .iter()
+            .filter(|v| {
+                v.category == Category::Person
+                    && !v.kept
+                    && !self.identities.reassigned(v.id)
+                    && (v.managed || self.loose(v))
+                    && !self
+                        .applied()
+                        .iter()
+                        .any(|a| a.step.original_shared().as_ref() == v.original.as_ref())
+            })
+            .filter_map(|v| {
+                let target = form_in_context(&v.original, v.surname)
+                    .and_then(|f| people.candidates(&f).target);
+                let current = self.variant_identity(v.id)?;
+                let desired = match target {
+                    Some(target) => Some(target),
+                    // A managed form leaves a full name it no longer fits.
+                    None if v.managed && people.is_target(current) => None,
+                    None => Some(current),
+                };
+                (desired != Some(current)).then_some((v.id, desired))
+            })
+            .collect();
+        for (id, desired) in moves {
+            let Some(variant) = self.variant(id) else {
+                continue;
+            };
+            // Its own identity, or the one a respelling of it ("MS BENNETT")
+            // left for already.
+            let own = variant
+                .own
+                .or((variant.identity == variant.id).then_some(variant.id))
+                .filter(|own| !people.is_target(*own))
+                .or_else(|| {
+                    self.identities
+                        .normalized_identity(&variant.original, Category::Person)
+                        .filter(|own| !people.is_target(*own))
+                });
+            let desired = match desired.or(own) {
+                Some(identity) => identity,
+                None => self.new_identity(Category::Person),
+            };
+            let Some(variant) = self.candidates.variant_mut(id) else {
+                continue;
+            };
+            variant.managed = true;
+            if !people.is_target(desired) {
+                variant.own = Some(desired);
+            }
+            let (seed, original) = (variant.identity, variant.original.clone());
+            if marked || self.identities.linked_automatically(id) {
+                self.identities
+                    .link_automatically(id, (desired != seed).then_some(desired));
+            } else if let Some(variant) = self.candidates.variant_mut(id) {
+                variant.identity = desired;
+            }
+            self.identities
+                .remember_normalized(&original, Category::Person, desired);
+        }
+        self.sync_identity_variants();
+    }
+    /// A scan's person proposal with an identity of its own and nothing
+    /// else in it: no other wording, no applied mention.
+    fn loose(&self, v: &super::Variant) -> bool {
+        v.detected
+            && !v.managed
+            && v.priority == 0
+            && v.identity == v.id
+            && !self.tracking.uses_identity(v.identity)
+            && self.variants().iter().all(|other| {
+                other.id == v.id || self.variant_identity(other.id) != Some(v.identity)
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identities::split_full_name;
+
+    fn form(wording: &str) -> Form {
+        parse_form(wording).unwrap_or_else(|| panic!("{wording} is no form"))
+    }
+    fn people(names: &[&str]) -> People {
+        People::new(names.iter().enumerate().map(|(i, n)| (i as u64 + 1, *n)))
+    }
+    /// The full name a form joins, by its 1-based place in `names`.
+    fn target(names: &[&str], wording: &str) -> Option<u64> {
+        people(names).candidates(&form(wording)).target
+    }
+
+    #[test]
+    fn nicknames_come_from_a_small_table() {
+        assert_eq!(nicknames("марина"), ["мариша"]);
+        assert_eq!(nicknames("elizabeth")[0], "liz");
+        assert!(nicknames("maya").is_empty());
+        assert!(nicknames("Марина").is_empty(), "lowercase only");
+    }
+
+    #[test]
+    fn first_names_and_patronymics_decline_by_suffix() {
+        let has = |name: &str, form: &str| given_forms(name).iter().any(|f| f == form);
+        for form in ["марины", "марине", "марину", "мариной"] {
+            assert!(has("марина", form), "{form}");
+        }
+        assert!(has("мариша", "маришей"));
+        assert!(has("мариша", "мариши"), "и after ш");
+        assert!(has("мария", "марией"));
+        assert!(has("иван", "ивану"));
+        assert!(has("дмитрий", "дмитрию"));
+        assert!(has("сергей", "сергеем"));
+        assert!(has("игорь", "игоря"));
+        assert_eq!(given_forms("maya"), ["maya"]);
+        assert!(patronymic_forms("сергеевна").contains(&"сергеевной".into()));
+        assert!(patronymic_forms("андреевич").contains(&"андреевичу".into()));
+        assert!(patronymic_like("андреевичу") && patronymic_like("сергеевны"));
+        assert!(!patronymic_like("марина") && !patronymic_like("павлова"));
+    }
+
+    #[test]
+    fn wordings_read_as_forms() {
+        assert_eq!(
+            form("Ms Bennett"),
+            Form::Word {
+                word: "bennett".into(),
+                titled: true
+            }
+        );
+        assert_eq!(
+            form("Марина Сергеевна"),
+            Form::Patronymic {
+                first: "марина".into(),
+                patronymic: "сергеевна".into()
+            }
+        );
+        let initials = |surname: &str, initials: &[char]| Form::Initials {
+            surname: surname.into(),
+            initials: initials.to_vec(),
+        };
+        assert_eq!(form("Павловой М. С."), initials("павловой", &['м', 'с']));
+        assert_eq!(form("Павлова М.С."), initials("павлова", &['м', 'с']));
+        assert_eq!(form("М.С. Павлова"), initials("павлова", &['м', 'с']));
+        assert_eq!(form("M. Bennett"), initials("bennett", &['m']));
+        // Two names without a patronymic, or initials between names, are not
+        // forms: a full name is one.
+        assert_eq!(parse_form("Maya Bennett"), None);
+        assert_eq!(parse_form("Павлова Марина Сергеевна"), None);
+        assert_eq!(parse_form("John F. Kennedy"), None);
+    }
+
+    #[test]
+    fn a_form_with_one_candidate_joins_it() {
+        let names = ["Павлова Марина Сергеевна", "Шахова Ирина Олеговна"];
+        for wording in [
+            "Павлова",
+            "Павловой",
+            "Павлову",
+            "Марина",
+            "Марине",
+            "Маришей",
+            "Марина Сергеевна",
+            "Марины Сергеевны",
+            "Павловой М. С.",
+            "М.С. Павлова",
+            "Павлова М.",
+        ] {
+            assert_eq!(target(&names, wording), Some(1), "{wording}");
+        }
+        assert_eq!(target(&names, "Ирину"), Some(2));
+        let names = ["Maya Bennett"];
+        for wording in ["Bennett", "Ms Bennett", "Maya", "M. Bennett"] {
+            assert_eq!(target(&names, wording), Some(1), "{wording}");
+        }
+        assert_eq!(target(&["Elizabeth Moore"], "Liz"), Some(1));
+        // A title goes with a surname, not a first name.
+        assert_eq!(target(&names, "Ms Maya"), None);
+    }
+
+    #[test]
+    fn two_candidates_or_another_gender_keep_a_form_apart() {
+        // Relatives sharing a surname.
+        let family = ["Maya Bennett", "Daniel Bennett"];
+        let both = people(&family).candidates(&form("Ms Bennett"));
+        assert_eq!(
+            (both.link.len(), both.target, both.proposed),
+            (2, None, true)
+        );
+        // "Петрова" is her name and his genitive.
+        assert_eq!(target(&["Петров Иван", "Петрова Марина"], "Петрова"), None);
+        // A masculine form names her relative: proposed, never linked to her.
+        let he = people(&["Павлова Марина Сергеевна"]).candidates(&form("Павлов"));
+        assert_eq!((he.target, he.proposed), (None, true));
+        assert_eq!(target(&["Павлова Марина Сергеевна"], "Павловым"), None);
+        // A first name two people share; a surname that is another's first name.
+        assert_eq!(target(&["Paul Smith", "Paul Jones"], "Paul"), None);
+        assert_eq!(target(&["Paul Smith", "James Paul"], "Paul"), None);
+        // A relative named by initials is a candidate, never a target.
+        assert_eq!(
+            target(&["Петров И.И.", "Петрова Марина Сергеевна"], "Петрову"),
+            None
+        );
+        assert_eq!(target(&["Петров И.И."], "Петрову"), None);
+    }
+
+    #[test]
+    fn every_initial_must_match_and_a_different_one_breaks_the_link() {
+        let names = ["Павлова Марина Сергеевна"];
+        let other = people(&names).candidates(&form("Павлова А. С."));
+        assert_eq!(
+            (other.target, other.proposed),
+            (None, true),
+            "proposed apart"
+        );
+        assert_eq!(target(&names, "Павлова М. А."), None);
+        assert_eq!(
+            target(&names, "Павлова С."),
+            None,
+            "the first initial first"
+        );
+        // Namesakes with the same initials.
+        let names = ["Павлова Марина Сергеевна", "Павлова Мария Степановна"];
+        assert_eq!(target(&names, "Павлова М.С."), None);
+        assert_eq!(target(&names, "Павлова М."), None);
+        assert_eq!(
+            target(&["Maya Bennett", "Daniel Bennett"], "D. Bennett"),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn initials_alone_name_the_one_person_they_fit() {
+        assert_eq!(form("E. N."), Form::InitialsOnly(vec!['e', 'n']));
+        assert_eq!(form("Я.В."), Form::InitialsOnly(vec!['я', 'в']));
+        assert_eq!(parse_form("E."), None, "one initial is too little");
+        // First name and surname, first name and patronymic, or all three.
+        assert_eq!(target(&["Ysolde Qhenn"], "Y. Q."), Some(1));
+        let names = ["Яромир Всеволодович Фьорд-Лукин", "Шахова Ирина Олеговна"];
+        assert_eq!(target(&names, "Я. В."), Some(1));
+        assert_eq!(target(&names, "Я. Ф."), Some(1));
+        assert_eq!(target(&names, "Я. В. Ф."), Some(1));
+        assert_eq!(target(&names, "И. О."), Some(2));
+        // Out of order or another person's: nothing.
+        assert_eq!(target(&names, "В. Я."), None);
+        let other = people(&names).candidates(&form("Y. Q."));
+        assert_eq!((other.target, other.proposed), (None, false));
+        // Two people with the same initials, or one named by initials
+        // only: proposed apart.
+        let both = people(&["Yara Quill", "Ysolde Qhenn"]).candidates(&form("Y. Q."));
+        assert_eq!((both.target, both.proposed), (None, true));
+        let abbreviated = people(&["Ysolde Qhenn", "Y. Quill"]).candidates(&form("Y. Q."));
+        assert_eq!((abbreviated.target, abbreviated.proposed), (None, true));
+        // A third initial that does not fit breaks the match.
+        assert_eq!(target(&["John Smith"], "J. S. X."), None);
+    }
+
+    #[test]
+    fn initials_alone_are_found_with_their_last_period() {
+        let names = ["Ysolde Qhenn", "Яромир Всеволодович Фьорд-Лукин"];
+        let source = "Signed Y. Q. on the sheet; подпись Я. В. в журнале; \
+            clause A. B. and Y. alone stay; so do Y. Q. X. and Y. Q. Z. W.";
+        let found: Vec<_> = find_forms(source, &people(&names), &[], &[])
+            .into_iter()
+            .map(|(r, ..)| &source[r])
+            .collect();
+        assert_eq!(found, ["Y. Q.", "Я. В."]);
+        // After a surname they are its initials, not a signature.
+        let names = ["Надир Оскарович Ветлин"];
+        let source = "Заявитель: Ветлин Н. О.";
+        let covered = [Range {
+            start: source.find("Ветлин").unwrap(),
+            end: source.find(" Н.").unwrap(),
+        }];
+        assert!(find_forms(source, &people(&names), &covered, &covered).is_empty());
+    }
+
+    /// #388: a word split by a line-end hyphen is one name word, so the
+    /// whole name around it is found; a capital after the hyphen is a
+    /// compound's next part, never the same word.
+    #[test]
+    fn a_word_split_by_a_line_end_hyphen_is_one_name_word() {
+        let names = ["Дарья Ильинична Верестова"];
+        assert_eq!(
+            form("Верес-\nтова"),
+            Form::Word {
+                word: "верестова".into(),
+                titled: false
+            }
+        );
+        assert_eq!(target(&names, "Верес-\nтова"), Some(1));
+        let source = "Приняла: Верес-\n  това Дарья Ильинична. Санкт-\nПетербург, Дарья -\nИльинична, Верестова\nДарья.";
+        let found: Vec<_> = find_forms(source, &people(&names), &[], &[])
+            .into_iter()
+            .map(|(r, ..)| &source[r])
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "Верес-\n  това Дарья Ильинична",
+                "Дарья",
+                "Верестова",
+                "Дарья"
+            ]
+        );
+        let whole = parse_whole("Верес-\nтова Дарья Ильинична").unwrap();
+        assert_eq!(people(&names).candidates(&whole).target, Some(1));
+        // A title split over lines stays a title, outside the span.
+        let source = "Later M-\nr Paul signed.";
+        let found: Vec<_> = find_forms(source, &people(&["James Paul"]), &[], &[])
+            .into_iter()
+            .map(|(r, ..)| &source[r])
+            .collect();
+        assert_eq!(found, ["Paul"]);
+        // So does a particle: the whole name is one form.
+        let source = "Signed by Ludwig v-\nan der Berg.";
+        let found: Vec<_> = find_forms(source, &people(&["Ludwig van der Berg"]), &[], &[])
+            .into_iter()
+            .map(|(r, ..)| &source[r])
+            .collect();
+        assert_eq!(found, ["Ludwig v-\nan der Berg"]);
+    }
+
+    #[test]
+    fn inflected_full_names_read_in_the_nominative() {
+        let nominative_of = |name: &str| {
+            let words: Vec<String> = name.split(' ').map(str::to_lowercase).collect();
+            nominative(&words).map(|w| w.join(" "))
+        };
+        for (inflected, base) in [
+            (
+                "Эльзы-Руты Мартыновны Таль-Шнейдер",
+                "эльза-рута мартыновна таль-шнейдер",
+            ),
+            (
+                "Эльзе-Руте Мартыновне Таль-Шнейдер",
+                "эльза-рута мартыновна таль-шнейдер",
+            ),
+            ("Марину Сергеевну Павлову", "марина сергеевна павлова"),
+            ("Петровой Анной Игоревной", "петрова анна игоревна"),
+            ("Павлову Дмитрию Андреевичу", "павлов дмитрий андреевич"),
+            ("Сергеем Ивановичем Петровым", "сергей иванович петров"),
+            ("Чайковского Ивана Петровича", "чайковский иван петрович"),
+            ("Дмитрии Игоревиче Орлове", "дмитрий игоревич орлов"),
+            ("Дарьи Ивановны Петровой", "дарья ивановна петрова"),
+            ("Дарье Ивановне Петровой", "дарья ивановна петрова"),
+            // A surname shaped like a patronymic, first or last.
+            ("Якубович Анны Сергеевны", "якубович анна сергеевна"),
+            ("Анны Сергеевны Якубович", "анна сергеевна якубович"),
+            ("Якубовича Антона Сергеевича", "якубович антон сергеевич"),
+        ] {
+            assert_eq!(
+                nominative_of(inflected).as_deref(),
+                Some(base),
+                "{inflected}"
+            );
+        }
+        assert_eq!(
+            nominative_of("Павлова Марина Сергеевна"),
+            None,
+            "nominative"
+        );
+        assert_eq!(nominative_of("Maya Bennett"), None);
+    }
+
+    #[test]
+    fn a_name_known_only_inflected_counts_for_its_nominative_and_written_forms() {
+        // The Russian demo: her husband only in the dative. "Павлова" is her
+        // nominative and only a guessed case of his; "Павлову" is written
+        // for him and is her accusative, so either.
+        let names = ["Павлова Марина Сергеевна", "Павлову Дмитрию Андреевичу"];
+        assert_eq!(target(&names, "Павлова"), Some(1));
+        let both = people(&names).candidates(&form("Павлову"));
+        assert_eq!((both.link.len(), both.target), (2, None));
+        // Alone, it is the one candidate.
+        assert_eq!(target(&["Павлову Дмитрию Андреевичу"], "Павлов"), Some(1));
+        // Relatives sharing a surname, one only inflected: no link.
+        let names = ["Петров Иван Иванович", "Петрова Антона Сергеевича"];
+        for form in ["Петров", "Петрова"] {
+            assert_eq!(target(&names, form), None, "{form}");
+        }
+        let names = ["Эльзы-Руты Мартыновны Таль-Шнейдер"];
+        assert_eq!(target(&names, "Таль-Шнейдер"), Some(1));
+        // A woman's consonant surname does not decline: "Таль-Шнейдера" is
+        // someone else's.
+        assert_eq!(target(&names, "Таль-Шнейдера"), None);
+    }
+
+    #[test]
+    fn a_full_name_repeats_in_any_letter_case() {
+        let found = |source, names: &[&str], covered: &[Range<usize>]| -> Vec<String> {
+            case_repeats(source, names, covered)
+                .into_iter()
+                .map(|(text, _)| text.to_owned())
+                .collect()
+        };
+        let source = "Iara Veldune signs. Signed: iara veldune; IARA  VELDUNE; \
+            mail iara.veldune@x.invalid; the rose hill; Iara alone.";
+        let names = ["Iara Veldune", "Rose Hill"];
+        assert_eq!(
+            found(source, &names, &[]),
+            ["iara veldune", "IARA  VELDUNE"]
+        );
+        // Inside an existing mention it is part of it.
+        let start = source.find("iara veldune").unwrap();
+        let covered = [Range {
+            start: start - 8,
+            end: start + 12,
+        }];
+        assert_eq!(found(source, &names, &covered), ["IARA  VELDUNE"]);
+        // A longer name is never cut to a shorter one it starts with, and
+        // each repeat names the name it repeats.
+        let names = ["Iara Veldune", "Iara Veldune Smith", "Iara Veldunex"];
+        let source = "x iara veldune smith; y iara veldunex.";
+        assert_eq!(
+            case_repeats(source, &names, &[]),
+            [("iara veldune smith", 1), ("iara veldunex", 2)]
+        );
+    }
+
+    #[test]
+    fn a_particle_belongs_to_the_surname() {
+        assert_eq!(
+            split_full_name("Генриетта Яновна де Лаваль"),
+            Some((
+                "де лаваль".into(),
+                vec!["генриетта".into(), "яновна".into()]
+            ))
+        );
+        assert_eq!(
+            split_full_name("Ludwig van der Berg"),
+            Some(("van der berg".into(), vec!["ludwig".into()]))
+        );
+        assert_eq!(
+            form("де Лаваль"),
+            Form::Word {
+                word: "де лаваль".into(),
+                titled: false
+            }
+        );
+        let names = ["Генриетта Яновна де Лаваль"];
+        for wording in ["де Лаваль", "Лаваль", "Г. Я. де Лаваль"] {
+            assert_eq!(target(&names, wording), Some(1), "{wording}");
+        }
+        // A capitalised "Van" is a given name, not a particle.
+        assert_eq!(
+            split_full_name("Van Morrison"),
+            Some(("morrison".into(), vec!["van".into()]))
+        );
+        // A feminine surname with a particle keeps its own forms bare too.
+        let names = ["Мария де Молина"];
+        for wording in ["Молина", "Молиной", "де Молиной"] {
+            assert_eq!(target(&names, wording), Some(1), "{wording}");
+        }
+        assert_eq!(target(&names, "Молиным"), None, "a relative's form");
+        // Initials after the surname with a particle break a wrong link.
+        let names = ["Генриетта Яновна де Лаваль"];
+        let source = "Подписал де Лаваль И. И.; подписала де Лаваль Г. Я.; Г. Я. де Лаваль.";
+        let found: Vec<_> = find_forms(source, &people(&names), &[], &[])
+            .into_iter()
+            .map(|(r, ..)| &source[r])
+            .collect();
+        assert_eq!(
+            found,
+            ["де Лаваль И. И.", "де Лаваль Г. Я.", "Г. Я. де Лаваль"]
+        );
+        assert_eq!(target(&names, "де Лаваль И. И."), None);
+        assert_eq!(target(&names, "де Лаваль Г. Я."), Some(1));
+        let source =
+            "Заказ записан на фамилию де Лаваль; Лаваль согласна; Ludwig met van der Berg.";
+        let names = ["Генриетта Яновна де Лаваль", "Ludwig van der Berg"];
+        let found: Vec<_> = find_forms(source, &people(&names), &[], &[])
+            .into_iter()
+            .map(|(r, ..)| &source[r])
+            .collect();
+        assert_eq!(found, ["де Лаваль", "Лаваль", "Ludwig", "van der Berg"]);
+    }
+
+    #[test]
+    fn ordinary_words_count_only_capitalised_mid_sentence() {
+        let names = ["Rose Hill"];
+        let found = |source: &str| -> Vec<String> {
+            find_forms(source, &people(&names), &[], &[])
+                .into_iter()
+                .map(|(r, ..)| source[r].to_owned())
+                .collect()
+        };
+        assert_eq!(found("We met Rose. Rose agreed; a rose."), ["Rose"]);
+        assert_eq!(
+            found("- Rose left\n1. Rose\n| Rose |"),
+            Vec::<String>::new()
+        );
+        // A title marks a surname wherever it stands, and stays outside the
+        // span (guide rule 1); a title's period ends no sentence.
+        assert_eq!(found("Call Ms Hill. Hill agreed."), ["Hill"]);
+        assert_eq!(found("Mr. Hill agreed."), ["Hill"]);
+        assert!(!sentence_start("Mr. Hill", 4));
+        assert!(sentence_start("**Rose**", 2));
+        assert!(!sentence_start("said “Rose", 6 + "“".len()));
+        // A name that is no ordinary word counts anywhere.
+        let names = ["Павлова Марина Сергеевна"];
+        let source = "Марина ушла. Мира нет.";
+        let found: Vec<_> = find_forms(source, &people(&names), &[], &[])
+            .into_iter()
+            .map(|(r, common, _)| (&source[r], common))
+            .collect();
+        assert_eq!(found, [("Марина", false)]);
+    }
+
+    /// A known person's first name, patronymic and surname side by side are
+    /// one proposal, not its parts (#391); two people, a role word, a list,
+    /// a sentence's end or a table cell between them keep them apart.
+    #[test]
+    fn a_whole_name_is_one_form() {
+        let found = |names: &[&str], source: &str| -> Vec<String> {
+            find_forms(source, &people(names), &[], &[])
+                .into_iter()
+                .map(|(r, ..)| source[r].to_owned())
+                .collect()
+        };
+        let notary = ["Лидия Игоревна Брюн", "Елена Борисовна Ренц"];
+        assert_eq!(
+            found(
+                &notary,
+                "Удостоверено мною, Лидией Игоревной Брюн. Брюн Лидии Игоревне"
+            ),
+            ["Лидией Игоревной Брюн", "Брюн Лидии Игоревне"]
+        );
+        // A patronymic the known name lacks joins it too.
+        assert_eq!(
+            found(
+                &["Лея Ли-Вельт"],
+                "Уважаемая госпожа Лея Аркадьевна Ли-Вельт!"
+            ),
+            ["Лея Аркадьевна Ли-Вельт"]
+        );
+        assert_eq!(
+            found(&["Лея Ли-Вельт"], "Письмо Лее Ли-Вельт"),
+            ["Лее Ли-Вельт"]
+        );
+        assert_eq!(
+            found(&["Maya Bennett"], "Dear Maya Bennett-Smith"),
+            ["Maya"]
+        );
+        // Two people side by side.
+        assert_eq!(
+            found(&notary, "Лидией Игоревной Ренц и Еленой Брюн"),
+            ["Лидией Игоревной", "Ренц", "Еленой", "Брюн"]
+        );
+        // A role word, a list, a sentence's end, a line and a table cell.
+        assert_eq!(found(&notary, "Нотариус Брюн"), ["Брюн"]);
+        assert_eq!(
+            found(
+                &notary,
+                "Лидия, Брюн. Лидия. Брюн\nЛидия\nБрюн | Лидия | Брюн |"
+            ),
+            [
+                "Лидия",
+                "Брюн",
+                "Лидия",
+                "Брюн",
+                "Лидия",
+                "Брюн",
+                "Лидия",
+                "Брюн"
+            ]
+        );
+        // A patronymic that is not the person's.
+        assert_eq!(found(&notary, "Лидия Петровна Брюн"), ["Лидия", "Брюн"]);
+        // A whole name joins its person; an English middle name is not
+        // guessed, and a title is never part of it.
+        let whole = |names: &[&str], wording: &str| {
+            people(names)
+                .candidates(&parse_whole(wording).unwrap())
+                .target
+        };
+        assert_eq!(whole(&notary, "Лидией Игоревной Брюн"), Some(1));
+        assert_eq!(whole(&["Лея Ли-Вельт"], "Ли-Вельт Лея Аркадьевна"), Some(1));
+        assert_eq!(whole(&notary, "Еленой Брюн"), None);
+        assert_eq!(whole(&["Maya Bennett"], "Maya Rose Bennett"), None);
+        // Surname first only in Russian: "Hill Grant" is not Grant Hill.
+        assert_eq!(whole(&["Grant Hill"], "Hill Grant"), None);
+        assert_eq!(whole(&["Grant Hill"], "Grant Hill"), Some(1));
+        // A surname's particles belong to it.
+        let lavalle = ["Генриетта Яновна де Лаваль"];
+        assert_eq!(
+            found(
+                &lavalle,
+                "Подписала Генриеттой Яновной де Лаваль; Генриетта де Лаваль"
+            ),
+            ["Генриеттой Яновной де Лаваль", "Генриетта де Лаваль"]
+        );
+        assert_eq!(parse_whole("Ms Maya Bennett"), None);
+        assert_eq!(parse_whole("Maya R. Bennett"), None);
+    }
+
+    #[test]
+    fn longer_forms_win_at_each_place() {
+        let names = ["Павлова Марина Сергеевна"];
+        let source = "Павловой М. С. и М.С. Павлова; Марина Сергеевна, Марине и Павловой.";
+        let found: Vec<_> = find_forms(source, &people(&names), &[], &[])
+            .into_iter()
+            .map(|(r, ..)| &source[r])
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "Павловой М. С.",
+                "М.С. Павлова",
+                "Марина Сергеевна",
+                "Марине",
+                "Павловой"
+            ]
+        );
+    }
+}

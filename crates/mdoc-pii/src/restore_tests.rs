@@ -1,0 +1,1289 @@
+use super::*;
+
+#[test]
+fn retired_case_aliases_survive_discovery_and_renumber_join_collisions() {
+    let mut review = Review::default();
+    review.reserve_aliases(&["PERSON_2".into(), "PERSON_7".into(), "RETIRED".into()]);
+    review.refresh("Carol");
+    let group = review.add_manual("Carol", 0..5, Category::Person).unwrap();
+    let id = review.variant_identity(group).unwrap();
+    assert_eq!(review.identity(id).unwrap().alias, "PERSON_8");
+    assert!(review.rename_identity(id, "RETIRED").is_err());
+    let document = vec![(10, identity("PERSON_2", Category::Person, &["Carol"]))];
+    let plan = plan_join(&[], &document, &["PERSON_2".into(), "PERSON_7".into()]);
+    assert_eq!(
+        plan.changes,
+        [(10, "PERSON_8".into(), Category::Person, false)]
+    );
+}
+use crate::{Detection, Recognizer};
+use mdoc_history::{EditorTransaction, HistoryChange, SourceEdit};
+
+fn identity(alias: &str, category: Category, originals: &[&str]) -> ExportedIdentity {
+    ExportedIdentity {
+        alias: alias.into(),
+        previous: Vec::new(),
+        category,
+        custom: parse_alias(alias).is_none(),
+        originals: originals.iter().map(|o| Arc::from(*o)).collect(),
+    }
+}
+fn apply(map: &RestoreMap, text: &str) -> String {
+    let mut out = text.to_string();
+    for (range, value) in map.restore(text).edits.iter().rev() {
+        out.replace_range(range.clone(), value);
+    }
+    out
+}
+/// The identities every fixture reply was written against.
+fn fixture_map() -> RestoreMap {
+    RestoreMap::new(vec![
+        identity(
+            "PERSON_1",
+            Category::Person,
+            &["Anna Petrova", "A. Petrova"],
+        ),
+        identity("PERSON_2", Category::Person, &["Иван Сергеевич Кузнецов"]),
+        identity("ORG_1", Category::Organization, &["Northwind Traders Ltd"]),
+        identity("ORG_2", Category::Organization, &["ООО «Ромашка»"]),
+        identity("EMAIL_1", Category::Email, &["anna@northwind.example"]),
+        identity(
+            "ADDRESS_1",
+            Category::Address,
+            &["12 Harbour Street, Leeds"],
+        ),
+        identity("Seller", Category::Organization, &["Contoso GmbH"]),
+    ])
+}
+
+#[test]
+fn canonical_and_reshaped_generated_aliases_restore() {
+    let map = fixture_map();
+    for (reply, expected) in [
+        ("PERSON_1 signs.", "Anna Petrova signs."),
+        ("person_1 signs.", "Anna Petrova signs."),
+        ("Person 1 signs.", "Anna Petrova signs."),
+        ("PERSON-1 signs.", "Anna Petrova signs."),
+        ("PERSON\u{a0}1 signs.", "Anna Petrova signs."),
+        ("PERSON_01 signs.", "Anna Petrova signs."),
+        ("**PERSON_1** signs.", "**Anna Petrova** signs."),
+        ("`PERSON_1` signs.", "`Anna Petrova` signs."),
+        ("PERSON_1's notice", "Anna Petrova's notice"),
+        ("PERSON_1’s notice", "Anna Petrova’s notice"),
+        ("(ORG_1)", "(Northwind Traders Ltd)"),
+        ("Write to EMAIL_1.", "Write to anna@northwind.example."),
+        (
+            "[mail](mailto:EMAIL_1)",
+            "[mail](mailto:anna@northwind.example)",
+        ),
+        (
+            "| PERSON_1 | ORG_1 |",
+            "| Anna Petrova | Northwind Traders Ltd |",
+        ),
+    ] {
+        assert_eq!(apply(&map, reply), expected, "{reply}");
+    }
+}
+
+#[test]
+fn partial_matches_and_unknown_loose_forms_never_restore() {
+    let map = fixture_map();
+    for reply in [
+        "PERSON_12 signs.",
+        "XPERSON_1",
+        "PERSON_1x",
+        "PERSON_1_draft",
+        "PERSONS_1",
+        "PERSON__1",
+        "PERSON 1a",
+        "Tax 2023 return",
+        "date-1",
+    ] {
+        assert_eq!(map.restore(reply).restored, 0, "{reply}");
+    }
+    // Only the canonical look of an unknown alias is reported.
+    assert_eq!(map.restore("PERSON_12 signs.").unresolved, 1);
+    assert_eq!(map.restore("Tax 2023, date-1, person 9").unresolved, 0);
+}
+
+#[test]
+fn russian_inflections_split_from_the_alias() {
+    let map = fixture_map();
+    assert_eq!(
+        apply(&map, "Направить PERSON_2-у копию, а ORG_2у — счёт."),
+        "Направить Иван Сергеевич Кузнецов-у копию, а ООО «Ромашка»у — счёт."
+    );
+    assert_eq!(
+        apply(&map, "Договор с «ORG_2» подписан PERSON_2."),
+        "Договор с «ООО «Ромашка»» подписан Иван Сергеевич Кузнецов."
+    );
+}
+
+#[test]
+fn custom_aliases_restore_only_exactly() {
+    let map = fixture_map();
+    assert_eq!(
+        apply(&map, "The Seller warrants"),
+        "The Contoso GmbH warrants"
+    );
+    for reply in [
+        "The seller warrants",
+        "Sellers warrant",
+        "Seller_1",
+        "ReSeller",
+    ] {
+        assert_eq!(map.restore(reply).restored, 0, "{reply}");
+    }
+}
+
+#[test]
+fn summary_counts_mentions_values_and_unresolved_tokens() {
+    let map = fixture_map();
+    let result = map.restore("PERSON_1 and person 1 met ORG_1; PERSON_9 and ORG_7 did not.");
+    assert_eq!(
+        (result.restored, result.values, result.unresolved),
+        (3, 2, 2)
+    );
+    let text = "PERSON_9 and ORG_7, PERSON_1";
+    assert_eq!(map.unresolved(text), vec![0..8, 13..18]);
+}
+
+#[test]
+fn previous_aliases_still_restore_after_a_rename() {
+    let mut renamed = identity("BUYER", Category::Person, &["Anna Petrova"]);
+    renamed.previous = vec!["PERSON_1".into()];
+    let map = RestoreMap::new(vec![renamed]);
+    assert_eq!(apply(&map, "BUYER, PERSON_1"), "Anna Petrova, Anna Petrova");
+}
+
+/// Replies modelled on how chat assistants reshape placeholders: Markdown
+/// emphasis, headings, tables, lists, possessives, Russian case endings,
+/// renumbered and invented tokens. Synthetic, not captured from a live model.
+#[test]
+fn fixture_replies_restore_as_expected() {
+    let map = fixture_map();
+    for (name, reply, expected, unresolved) in [
+        (
+            "en-summary",
+            include_str!("../fixtures/restore/en-summary.reply.md"),
+            include_str!("../fixtures/restore/en-summary.expected.md"),
+            0,
+        ),
+        (
+            "en-table",
+            include_str!("../fixtures/restore/en-table.reply.md"),
+            include_str!("../fixtures/restore/en-table.expected.md"),
+            1,
+        ),
+        (
+            "ru-letter",
+            include_str!("../fixtures/restore/ru-letter.reply.md"),
+            include_str!("../fixtures/restore/ru-letter.expected.md"),
+            0,
+        ),
+        (
+            "mangled",
+            include_str!("../fixtures/restore/mangled.reply.md"),
+            include_str!("../fixtures/restore/mangled.expected.md"),
+            3,
+        ),
+    ] {
+        assert_eq!(apply(&map, reply), expected, "{name}");
+        assert_eq!(map.restore(reply).unresolved, unresolved, "{name}");
+    }
+}
+
+pub(crate) fn apply_pending(review: &mut Review, source: &str, revision: u64) -> String {
+    let plans = review.pending_plans(source, &HashMap::new()).unwrap();
+    let added = review.prepare_replacements(&plans);
+    let mut text = source.to_string();
+    for plan in plans.iter().rev() {
+        text.replace_range(plan.range.clone(), &plan.after);
+    }
+    review.on_transaction(
+        &EditorTransaction {
+            revision,
+            changes: vec![HistoryChange {
+                before: revision - 1,
+                after: revision,
+                edits: plans
+                    .iter()
+                    .map(|p| SourceEdit {
+                        range: p.range.clone(),
+                        new_len: p.after.len(),
+                    })
+                    .collect(),
+            }],
+            retained: vec![revision - 1, revision],
+        },
+        &text,
+    );
+    review.commit_replacements(revision, added);
+    text
+}
+
+#[test]
+fn export_takes_applied_aliases_and_the_fullest_wording() {
+    let source = "Anna Petrova and A. Petrova met Northwind Traders Ltd.";
+    let mut review = Review::default();
+    review
+        .ingest(
+            source,
+            vec![
+                Detection {
+                    range: 0..12,
+                    category: Category::Person,
+                    score: 0.9,
+                    recognizer: Recognizer::Model,
+                },
+                Detection {
+                    range: 32..53,
+                    category: Category::Organization,
+                    score: 0.9,
+                    recognizer: Recognizer::Model,
+                },
+            ],
+        )
+        .unwrap();
+    let short = review.add_manual(source, 17..27, Category::Person).unwrap();
+    let anna = review.variant_identity(review.variants()[0].id).unwrap();
+    review.assign_variant(short, anna).unwrap();
+    let applied = apply_pending(&mut review, source, 1);
+    assert_eq!(applied, "PERSON_1 and PERSON_1 met ORG_1.");
+    let exported = review.export_identities();
+    assert_eq!(exported.len(), 2);
+    let person = exported.iter().find(|e| e.alias == "PERSON_1").unwrap();
+    assert_eq!(person.wording(), "Anna Petrova");
+    assert_eq!(person.originals.len(), 2);
+    let map = RestoreMap::new(exported.clone());
+    assert_eq!(
+        apply(&map, &applied),
+        "Anna Petrova and Anna Petrova met Northwind Traders Ltd."
+    );
+
+    // A new document seeded with these identities proposes the same aliases.
+    let restored = "Anna Petrova wrote to Northwind Traders Ltd and A. Petrova.";
+    let mut seeded = Review::default();
+    seeded.seed(&exported, restored);
+    let plans = seeded.pending_plans(restored, &HashMap::new()).unwrap();
+    let aliases: Vec<_> = plans.iter().map(|p| p.after.as_ref()).collect();
+    assert_eq!(aliases, ["PERSON_1", "ORG_1", "PERSON_1"]);
+    // New identities continue numbering after the seeded aliases.
+    assert_eq!(seeded.next_alias(Category::Person), "PERSON_2");
+}
+
+#[test]
+fn a_wording_with_a_full_stop_does_not_double_the_reply_s() {
+    let map = RestoreMap::new(vec![identity(
+        "ORG_1",
+        Category::Organization,
+        &["Northwind Ltd."],
+    )]);
+    assert_eq!(apply(&map, "Buy from ORG_1."), "Buy from Northwind Ltd.");
+    assert_eq!(apply(&map, "ORG_1 sells"), "Northwind Ltd. sells");
+}
+
+#[test]
+fn choices_offer_the_token_category_first() {
+    let map = fixture_map();
+    let people: Vec<_> = map.choices("PERSON_9")[..2].to_vec();
+    assert!(
+        people
+            .iter()
+            .all(|&i| map.identities()[i].category == Category::Person)
+    );
+    assert_eq!(map.choices("ORG-4")[0], 2);
+    assert_eq!(map.choices("PERSON_9").len(), map.identities().len());
+}
+
+#[test]
+fn a_generated_looking_custom_alias_matches_exactly() {
+    let mut chosen = identity("PERSON_9", Category::Person, &["Anna Petrova"]);
+    chosen.custom = true;
+    chosen.previous = vec!["PERSON_1".into()];
+    let map = RestoreMap::new(vec![chosen]);
+    assert_eq!(
+        apply(&map, "PERSON_9 and PERSON_1"),
+        "Anna Petrova and Anna Petrova"
+    );
+    for reply in ["person 9", "PERSON-9", "PERSON_09"] {
+        assert_eq!(map.restore(reply).restored, 0, "{reply}");
+    }
+    assert_eq!(
+        map.restore("person 1").restored,
+        1,
+        "earlier generated aliases stay lenient"
+    );
+}
+
+#[test]
+fn restored_ranges_follow_the_applied_edits() {
+    let map = RestoreMap::new(vec![
+        identity("PERSON_1", Category::Person, &["John Smith"]),
+        identity("PERSON_2", Category::Person, &["John Smith"]),
+    ]);
+    let reply = "PERSON_1 met PERSON_2.";
+    let restoration = map.restore(reply);
+    let text = apply(&map, reply);
+    assert_eq!(text, "John Smith met John Smith.");
+    let ranges = restoration.restored_ranges();
+    assert_eq!(ranges, [(0..10, 0), (15..25, 1)]);
+    assert!(ranges.iter().all(|(r, _)| &text[r.clone()] == "John Smith"));
+}
+
+#[test]
+fn relinked_alias_tokens_become_restorable_applied_replacements() {
+    let mut renamed = identity("BUYER", Category::Person, &["Anna Petrova"]);
+    renamed.previous = vec!["PERSON_1".into()];
+    let identities = vec![
+        renamed,
+        identity("ORG_1", Category::Organization, &["Northwind Ltd"]),
+    ];
+    let source = "BUYER and PERSON_1 met ORG_1; person 1 and ORG_9 did not.";
+    let mut review = Review::default();
+    let ids = review.seed(&identities, source);
+    assert_eq!(review.relink(source, &identities, &ids, 7), 3);
+    let applied: Vec<_> = review
+        .applied()
+        .iter()
+        .map(|a| {
+            (
+                &source[a.range.clone()],
+                a.step.before.as_ref(),
+                a.step.identity,
+            )
+        })
+        .collect();
+    assert_eq!(
+        applied,
+        [
+            ("BUYER", "Anna Petrova", ids[0]),
+            ("PERSON_1", "Anna Petrova", ids[0]),
+            ("ORG_1", "Northwind Ltd", ids[1]),
+        ]
+    );
+    // Undo replacement returns the wording; Apply renames the retired alias.
+    let all: HashSet<_> = review.applied().iter().map(|a| a.id).collect();
+    let edits = review.reversion_edits(source, &all).unwrap();
+    assert_eq!(edits[1], (10..18, "Anna Petrova".to_string()));
+    let corrections = review.alias_corrections(source).unwrap();
+    assert_eq!(corrections.len(), 1);
+    assert_eq!(corrections[0].after.as_ref(), "BUYER");
+    // Linking twice adds nothing.
+    assert_eq!(review.relink(source, &identities, &ids, 7), 0);
+}
+
+#[test]
+fn joining_takes_case_aliases_and_renumbers_collisions() {
+    let mut anna = identity("PERSON_1", Category::Person, &["Anna Petrova"]);
+    anna.previous = vec!["PERSON_3".into()];
+    let case = vec![
+        anna,
+        identity("ORG_1", Category::Organization, &["Northwind Ltd"]),
+    ];
+    let document = vec![
+        // Boris collides with the case's PERSON_1.
+        (
+            10,
+            identity("PERSON_1", Category::Person, &["Boris Ivanov"]),
+        ),
+        // Anna is already in the case under PERSON_1.
+        (
+            11,
+            identity(
+                "PERSON_2",
+                Category::Person,
+                &["A. Petrova", "Anna Petrova"],
+            ),
+        ),
+        // EMAIL_1 is free in the case and keeps its alias.
+        (12, identity("EMAIL_1", Category::Email, &["b@x.example"])),
+    ];
+    let plan = plan_join(&case, &document, &[]);
+    assert_eq!(
+        plan.changes,
+        [
+            (10, "PERSON_4".into(), Category::Person, false),
+            (11, "PERSON_1".into(), Category::Person, false),
+        ],
+        "PERSON_3 is retired, so Boris skips it"
+    );
+    assert_eq!(plan.unmatched.len(), 1);
+    assert_eq!(plan.unmatched[0].alias, "ORG_1");
+}
+
+#[test]
+fn reassigning_aliases_swaps_without_collisions_and_corrects_applied_text() {
+    let source = "Anna Petrova met Boris Ivanov.";
+    let mut review = Review::default();
+    review
+        .ingest(
+            source,
+            vec![
+                Detection {
+                    range: 0..12,
+                    category: Category::Person,
+                    score: 0.9,
+                    recognizer: Recognizer::Model,
+                },
+                Detection {
+                    range: 17..29,
+                    category: Category::Person,
+                    score: 0.9,
+                    recognizer: Recognizer::Model,
+                },
+            ],
+        )
+        .unwrap();
+    let text = apply_pending(&mut review, source, 1);
+    assert_eq!(text, "PERSON_1 met PERSON_2.");
+    let anna = review.identity_by_alias("PERSON_1").unwrap();
+    let boris = review.identity_by_alias("PERSON_2").unwrap();
+    review
+        .reassign_aliases(&[
+            (anna, "PERSON_2".into(), Category::Person, false),
+            (boris, "PERSON_1".into(), Category::Person, false),
+        ])
+        .unwrap();
+    let plans = review.alias_corrections(&text).unwrap();
+    let afters: Vec<_> = plans.iter().map(|p| p.after.as_ref()).collect();
+    assert_eq!(afters, ["PERSON_2", "PERSON_1"]);
+    assert!(
+        review
+            .reassign_aliases(&[(anna, "PERSON_1".into(), Category::Person, false)])
+            .is_err(),
+        "two active identities may not share an alias"
+    );
+}
+
+#[test]
+fn joining_never_hands_out_an_alias_the_document_used_before() {
+    let case = vec![identity("PERSON_1", Category::Person, &["Anna Petrova"])];
+    let mut boris = identity("PERSON_3", Category::Person, &["Boris Ivanov"]);
+    boris.previous = vec!["PERSON_2".into()];
+    let document = vec![
+        (10, boris),
+        // Collides with the case; PERSON_2 and PERSON_3 are this document's.
+        (
+            11,
+            identity("PERSON_1", Category::Person, &["Ivan Sidorov"]),
+        ),
+    ];
+    let plan = plan_join(&case, &document, &[]);
+    assert_eq!(
+        plan.changes,
+        [(11, "PERSON_4".into(), Category::Person, false)]
+    );
+}
+
+#[test]
+fn bulk_recategorizing_an_owner_releases_its_contacts() {
+    let source = "Anna Petrova, anna@x.example";
+    let mut review = Review::default();
+    let anna = review.add_manual(source, 0..12, Category::Person).unwrap();
+    let mail = review.add_manual(source, 14..28, Category::Email).unwrap();
+    let anna = review.variant_identity(anna).unwrap();
+    let mail = review.variant_identity(mail).unwrap();
+    review.set_owner(mail, Some(anna)).unwrap();
+    review
+        .reassign_aliases(&[(anna, "OTHER_1".into(), Category::Other, false)])
+        .unwrap();
+    assert_eq!(review.identity(mail).unwrap().owner, None);
+}
+
+#[test]
+fn pseudonymizing_replaces_known_whole_names_longest_first() {
+    let map = RestoreMap::new(vec![
+        identity("PERSON_1", Category::Person, &["Anna Petrova", "Anna"]),
+        identity("ORG_1", Category::Organization, &["Northwind Ltd"]),
+    ]);
+    let (text, count) =
+        map.pseudonymize("Anna Petrova and Anna met Northwind Ltd; Annabel did not.");
+    assert_eq!(text, "PERSON_1 and PERSON_1 met ORG_1; Annabel did not.");
+    assert_eq!(count, 3);
+    assert_eq!(map.pseudonymize("nothing here"), ("nothing here".into(), 0));
+}
+
+#[test]
+fn exact_aliases_are_the_tokens_a_reopened_document_relinks() {
+    let mut anna = identity("PERSON_1", Category::Person, &["Anna Petrova"]);
+    anna.previous = vec!["PERSON_7".into()];
+    let map = RestoreMap::new(vec![anna]);
+    assert_eq!(
+        map.exact_aliases("person 1 met PERSON_1, then PERSON_7 and PERSON_9."),
+        ["PERSON_1", "PERSON_7"]
+    );
+}
+
+#[test]
+fn known_names_counts_identities_still_written_as_originals() {
+    let map = RestoreMap::new(vec![
+        identity("PERSON_1", Category::Person, &["Anna Petrova", "Anna"]),
+        identity("ORG_1", Category::Organization, &["Northwind Ltd"]),
+    ]);
+    assert_eq!(map.known_names("Anna Petrova and Anna met PERSON_2."), 1);
+    assert_eq!(map.known_names("Anna met Northwind Ltd."), 2);
+    assert_eq!(map.known_names("PERSON_1 met ORG_1; Annabel did not."), 0);
+}
+
+#[test]
+fn a_lone_word_of_a_multi_word_person_original_is_a_name_not_replaced() {
+    let map = RestoreMap::new(vec![
+        identity(
+            "PERSON_1",
+            Category::Person,
+            &["Павлова Марина Сергеевна", "Марина Сергеевна"],
+        ),
+        identity("ORG_1", Category::Organization, &["ООО «Северный двор»"]),
+    ]);
+    // #301: the Russian demo's first name alone stayed in Copy for AI.
+    assert_eq!(
+        map.known_names("PERSON_1 работала. Марина обратилась в суд."),
+        1
+    );
+    assert_eq!(map.known_names("Сергеевна и Павлова"), 1, "one person");
+    assert_eq!(
+        map.known_names("Марина Сергеевна и Марина"),
+        1,
+        "counted once"
+    );
+    // Whole words and exact case only: no inflection beyond ADR 0068's
+    // proposed variants.
+    assert_eq!(map.known_names("Маринад, марина, Марину, PERSON_1."), 0);
+    // An organisation's words are no names: "Северный ветер" is not ORG_1.
+    assert_eq!(map.known_names("Северный ветер; ООО помогло. ORG_1."), 0);
+}
+
+/// #301's Apply on the Russian demo: every name but a lone "Марина" was
+/// replaced, and readiness used to pass it.
+#[test]
+fn the_russian_demos_lone_first_name_is_not_ready() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read = |path: std::path::PathBuf| std::fs::read_to_string(path).unwrap();
+    let demo = read(repo.join("docs/product-media/Соглашение об урегулировании.md"));
+    let mut identities = captured_identities(&read(
+        repo.join("tests/fixtures/restore/claude-ru/identities.json"),
+    ));
+    for identity in &mut identities {
+        identity.originals.retain(|o| o.as_ref() != "Марина");
+    }
+    let map = RestoreMap::new(identities);
+    let (sent, _) = map.pseudonymize(&demo);
+    assert!(sent.contains("Марина обратилась в суд"));
+    assert_eq!(map.known_names(&sent), 1);
+}
+
+/// #367: a character reference hides no name from readiness, and neither
+/// does an invisible character or a decomposed letter (#420, #418).
+#[test]
+fn readiness_reads_character_references_as_their_characters() {
+    let map = RestoreMap::new(vec![
+        identity("PERSON_1", Category::Person, &["Anna Petrova"]),
+        identity("PERSON_2", Category::Person, &["Ism&#97;y O&#39;Verren"]),
+    ]);
+    assert_eq!(map.known_names("Dear Ann&#97; Petrova,"), 1);
+    assert_eq!(map.known_names("Dear Ann&#97;,"), 1);
+    assert_eq!(map.known_names("Ismay O'Verren signed."), 1);
+    assert_eq!(map.known_names("Ism&#x61;y signed."), 1);
+    // A soft hyphen or a decomposed letter hides no name either (#420, #418).
+    assert_eq!(map.known_names("Pe\u{ad}trova signed."), 1);
+    let map = RestoreMap::new(vec![identity(
+        "PERSON_1",
+        Category::Person,
+        &["Артём Зайцев"],
+    )]);
+    assert_eq!(map.known_names("Арте\u{308}м пришёл."), 1);
+    assert_eq!(map.known_names("PERSON_1 and PERSON_2 &amp; Co."), 0);
+}
+
+#[test]
+fn lone_words_skip_titles_short_and_lowercase_words_and_aliases() {
+    let map = RestoreMap::new(vec![
+        identity("PERSON_1", Category::Person, &["Ms Anna van der Berg"]),
+        identity("PERSON_2", Category::Person, &["Li Bo", "Dr Bennett"]),
+        identity("Мария Иванова", Category::Person, &["Мария Петрова"]),
+        identity("ORG_1", Category::Organization, &["Northwind Trading Ltd"]),
+    ]);
+    // "Ms", "van" and "der" are no names; "Li" and "Bo" are too short;
+    // "Dr Bennett" is one word with its title.
+    assert_eq!(
+        map.known_names("Ms Lee met van der Meer, Li and Bo. Bennett left."),
+        0
+    );
+    assert_eq!(map.known_names("Anna met Berg."), 1);
+    // A custom alias that shares a word with an original is no leftover.
+    assert_eq!(map.known_names("Мария Иванова подписала."), 0);
+    assert_eq!(map.known_names("Мария подписала."), 1);
+    assert_eq!(map.known_names("Northwind and Trading Ltd."), 0);
+}
+
+#[test]
+fn a_partial_longer_match_does_not_hide_a_whole_shorter_name() {
+    let map = RestoreMap::new(vec![
+        identity("PERSON_1", Category::Person, &["Anna Petrova"]),
+        identity("PERSON_2", Category::Person, &["Petrova"]),
+    ]);
+    assert_eq!(
+        map.pseudonymize("XAnna Petrova"),
+        ("XAnna PERSON_2".into(), 1)
+    );
+}
+
+/// An `identities.json` of a captured reply (tests/fixtures/restore/README.md).
+fn captured_identities(json: &str) -> Vec<ExportedIdentity> {
+    let strings = |value: Option<&serde_json::Value>| -> Vec<String> {
+        value
+            .and_then(|v| v.as_array())
+            .map(|list| {
+                list.iter()
+                    .map(|s| s.as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let list: serde_json::Value = serde_json::from_str(json).unwrap();
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            let alias = entry["alias"].as_str().unwrap().to_string();
+            let token = entry["category"].as_str().unwrap();
+            let category = *Category::ALL
+                .iter()
+                .find(|c| c.token() == token)
+                .unwrap_or_else(|| panic!("unknown category {token}"));
+            let originals = strings(entry.get("originals"));
+            assert!(!originals.is_empty(), "{alias} has no originals");
+            ExportedIdentity {
+                custom: parse_alias(&alias).is_none(),
+                previous: strings(entry.get("previous")),
+                originals: originals.iter().map(|o| Arc::from(o.as_str())).collect(),
+                category,
+                alias,
+            }
+        })
+        .collect()
+}
+
+/// Real ChatGPT and Claude answers to the settlement demos leave no alias
+/// behind (ADR 0056). `<assistant>-<en|ru>[-date]` names each capture.
+#[test]
+fn captured_replies_restore_completely() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut captures: Vec<_> = std::fs::read_dir(repo.join("tests/fixtures/restore"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_dir())
+        .collect();
+    captures.sort();
+    for dir in captures {
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let read = |path: &std::path::Path| {
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        };
+        let demo = match name.split('-').nth(1) {
+            Some("en") => "Settlement agreement.md",
+            Some("ru") => "Соглашение об урегулировании.md",
+            _ => panic!("{name}: expected <assistant>-<en|ru>[-date]"),
+        };
+        let demo = read(&repo.join("docs/product-media").join(demo));
+        let map = RestoreMap::new(captured_identities(&read(&dir.join("identities.json"))));
+        let sent = read(&dir.join("sent.md"));
+        let (_, sent) = sent
+            .split_once("\n\n---\n\n")
+            .unwrap_or_else(|| panic!("{name}: sent.md has no Copy for AI note"));
+        assert_eq!(
+            map.pseudonymize(&demo).0,
+            sent,
+            "{name}: identities.json is not the mapping that was sent"
+        );
+        // Readiness finds no leftover in a fully pseudonymized demo, lone
+        // name words included (#301).
+        assert_eq!(map.known_names(sent), 0, "{name}: names not replaced");
+        let reply = read(&dir.join("reply.md"));
+        assert_eq!(
+            map.restore(&reply).unresolved,
+            0,
+            "{name}: unresolved tokens"
+        );
+        let restored = apply(&map, &reply);
+        let left: Vec<_> = map
+            .tokens(&restored)
+            .iter()
+            .map(|t| &restored[t.range.clone()])
+            .collect();
+        assert!(
+            left.is_empty(),
+            "{name}: aliases left after Restore: {left:?}"
+        );
+        assert_eq!(restored, read(&dir.join("expected.md")), "{name}");
+        // The Reply view (ADR 0078) shows the same text, nothing unresolved.
+        let in_place = map.restore_in_place(&reply);
+        assert_eq!(in_place.text, restored, "{name}: in place");
+        assert!(in_place.unresolved.is_empty(), "{name}: in place");
+    }
+}
+
+#[test]
+fn restoring_in_place_matches_the_restore_tab_and_marks_what_is_left() {
+    let map = fixture_map();
+    let reply = "**PERSON_1** met PERSON_9, then person 1 and PERSON_2. PERSON_8 left.";
+    let shown = map.restore_in_place(reply);
+    assert_eq!(shown.text, apply(&map, reply));
+    let restored: Vec<_> = shown
+        .restored
+        .iter()
+        .map(|(r, i)| (&shown.text[r.clone()], *i))
+        .collect();
+    assert_eq!(
+        restored,
+        [
+            ("Anna Petrova", 0),
+            ("Anna Petrova", 0),
+            ("Иван Сергеевич Кузнецов", 1)
+        ]
+    );
+    let left: Vec<_> = shown
+        .unresolved
+        .iter()
+        .map(|r| &shown.text[r.clone()])
+        .collect();
+    assert_eq!(left, ["PERSON_9", "PERSON_8"]);
+    assert_eq!(shown.values, 2, "two identities, three mentions");
+    assert_eq!(map.restore(reply).unresolved, shown.unresolved.len());
+    assert_eq!(map.restore_in_place(""), RestoredText::default());
+}
+
+#[test]
+fn realiasing_follows_swapped_and_renamed_identities() {
+    let anna = identity("PERSON_1", Category::Person, &["Anna Petrova"]);
+    let boris = identity("PERSON_2", Category::Person, &["Boris Ivanov"]);
+    let map = RestoreMap::new(vec![anna.clone(), boris.clone()]);
+    let reply = "**PERSON_1** owes PERSON_2; person 1 and Person-2 agree. PERSON_9 left.";
+    // A join swaps the two aliases: every token is read before any changes.
+    assert_eq!(
+        map.realias(reply, &[Some("PERSON_2".into()), Some("PERSON_1".into())])
+            .as_deref(),
+        Some("**PERSON_2** owes PERSON_1; person 2 and Person-1 agree. PERSON_9 left.")
+    );
+    // A custom alias replaces the token; untouched identities stay.
+    assert_eq!(
+        map.realias(reply, &[Some("BUYER".into()), None]).as_deref(),
+        Some("**BUYER** owes PERSON_2; BUYER and Person-2 agree. PERSON_9 left.")
+    );
+    assert_eq!(map.realias(reply, &[None, None]), None);
+    assert_eq!(
+        map.realias(reply, &[Some("PERSON_1".into()), None]),
+        None,
+        "an unchanged alias is no change"
+    );
+}
+
+#[test]
+fn a_current_alias_wins_over_another_identitys_retired_one() {
+    // After a join Anna's old PERSON_1 is retired while Boris holds it now.
+    let mut anna = identity("PERSON_2", Category::Person, &["Anna Petrova"]);
+    anna.previous = vec!["PERSON_1".into(), "CLIENT".into()];
+    let boris = identity("CLIENT", Category::Person, &["Boris Ivanov"]);
+    let carol = identity("PERSON_1", Category::Person, &["Carol Smith"]);
+    let map = RestoreMap::new(vec![anna, boris, carol]);
+    assert_eq!(
+        apply(&map, "PERSON_1, CLIENT and PERSON_2"),
+        "Carol Smith, Boris Ivanov and Anna Petrova"
+    );
+}
+
+#[test]
+fn reseeding_and_applying_preserves_the_saved_primary_and_retired_alias() {
+    let source = "Марина Павлова met Павлова Марина";
+    let mut saved = identity(
+        "PERSON_1",
+        Category::Person,
+        &["Павлова Марина", "Марина Павлова"],
+    );
+    saved.previous.push("PERSON_2".into());
+    let mut review = Review::default();
+    review.seed(&[saved], source);
+    let plans = review.pending_plans(source, &HashMap::new()).unwrap();
+    let applied = review.prepare_replacements(&plans);
+    review.commit_replacements(1, applied);
+    let exported = review.export_identities();
+    assert_eq!(exported.len(), 1);
+    assert_eq!(exported[0].wording(), "Павлова Марина");
+    let map = RestoreMap::new(exported);
+    assert_eq!(
+        apply(&map, "PERSON_1 met PERSON_2"),
+        "Павлова Марина met Павлова Марина"
+    );
+}
+
+fn found(source: &str, text: &str, category: Category) -> Detection {
+    let start = source.find(text).unwrap();
+    Detection {
+        range: start..start + text.len(),
+        category,
+        score: 0.9,
+        recognizer: Recognizer::Model,
+    }
+}
+
+#[test]
+fn withdrawing_a_category_forgets_only_unapplied_scan_proposals() {
+    let source = "Ann Lee met Bob Day, Cara and Acme Ltd.";
+    let mut review = Review::default();
+    review
+        .ingest(source, vec![found(source, "Ann Lee", Category::Person)])
+        .unwrap();
+    let text = apply_pending(&mut review, source, 1);
+    assert_eq!(text, "PERSON_1 met Bob Day, Cara and Acme Ltd.");
+    review
+        .ingest(
+            &text,
+            vec![
+                found(&text, "Bob Day", Category::Person),
+                found(&text, "Acme Ltd", Category::Organization),
+            ],
+        )
+        .unwrap();
+    let cara = text.find("Cara").unwrap();
+    review
+        .add_manual(&text, cara..cara + 4, Category::Person)
+        .unwrap();
+
+    assert_eq!(review.withdraw_detected(Category::Person), 1);
+    let originals: Vec<_> = review
+        .variants()
+        .iter()
+        .map(|v| v.original.as_ref())
+        .collect();
+    assert!(!originals.contains(&"Bob Day"), "{originals:?}");
+    assert!(originals.contains(&"Cara") && originals.contains(&"Acme Ltd"));
+    // The applied replacement and its mapping stay.
+    assert_eq!(review.applied().len(), 1);
+    assert!(
+        review
+            .export_identities()
+            .iter()
+            .any(|i| i.alias == "PERSON_1" && i.originals[0].as_ref() == "Ann Lee")
+    );
+    assert_eq!(review.withdraw_detected(Category::Person), 0);
+}
+
+#[test]
+fn withdrawing_a_category_keeps_restored_wordings() {
+    let source = "Dan met Eve.";
+    let mut review = Review::default();
+    review.seed(&[identity("PERSON_1", Category::Person, &["Dan"])], source);
+    review
+        .ingest(source, vec![found(source, "Eve", Category::Person)])
+        .unwrap();
+    assert_eq!(review.withdraw_detected(Category::Person), 1);
+    let originals: Vec<_> = review
+        .variants()
+        .iter()
+        .map(|v| v.original.as_ref())
+        .collect();
+    assert_eq!(originals, ["Dan"]);
+}
+
+#[test]
+fn same_as_into_a_shorter_seeded_identity_restores_the_longest_full_form() {
+    // A case knows PERSON_1 only as "Ms Bennett"; this member links the full
+    // name to it with Same as…. The pin breaks ties only (ADR 0080).
+    let source = "Maya Bennett signed. Ms Bennett agreed.";
+    let mut review = Review::default();
+    let seeded = review.seed(
+        &[identity("PERSON_1", Category::Person, &["Ms Bennett"])],
+        source,
+    )[0];
+    review
+        .ingest(
+            source,
+            vec![Detection {
+                range: 0..12,
+                category: Category::Person,
+                score: 0.9,
+                recognizer: Recognizer::Model,
+            }],
+        )
+        .unwrap();
+    let full = review
+        .variants()
+        .iter()
+        .find(|v| v.original.as_ref() == "Maya Bennett")
+        .unwrap()
+        .id;
+    let full = review.variant_identity(full).unwrap();
+    assert_ne!(full, seeded);
+    review.merge_identity(full, seeded).unwrap();
+    let exported = review.export_identities();
+    assert_eq!(exported.len(), 1);
+    assert_eq!(exported[0].alias, "PERSON_1");
+    assert_eq!(exported[0].wording(), "Maya Bennett");
+    let map = RestoreMap::new(exported.clone());
+    assert_eq!(apply(&map, "PERSON_1 agreed."), "Maya Bennett agreed.");
+    // Reopening the case keeps it.
+    let mut reopened = Review::default();
+    reopened.seed(&exported, source);
+    assert_eq!(reopened.export_identities()[0].wording(), "Maya Bennett");
+}
+
+#[test]
+fn a_failed_merge_leaves_the_identities_unchanged() {
+    let source = "Maya Bennett, +7 900 123-45-67, maya@example.com";
+    let mut review = Review::default();
+    let detection = |range, category| Detection {
+        range,
+        category,
+        score: 0.9,
+        recognizer: Recognizer::Model,
+    };
+    review
+        .ingest(
+            source,
+            vec![
+                detection(0..12, Category::Person),
+                detection(14..30, Category::Phone),
+                detection(32..48, Category::Email),
+            ],
+        )
+        .unwrap();
+    let id = |review: &Review, category| {
+        let group = review
+            .variants()
+            .iter()
+            .find(|v| v.category == category)
+            .unwrap()
+            .id;
+        review.variant_identity(group).unwrap()
+    };
+    let (maya, phone, email) = (
+        id(&review, Category::Person),
+        id(&review, Category::Phone),
+        id(&review, Category::Email),
+    );
+    review.set_owner(phone, Some(maya)).unwrap();
+    let before = review.export_identities();
+    // The phone's owner cannot move to an email address.
+    assert!(review.merge_identity(maya, email).is_err());
+    assert_eq!(review.export_identities(), before);
+    assert_eq!(review.identity(phone).unwrap().owner, Some(maya));
+    let person = review
+        .variants()
+        .iter()
+        .find(|v| v.category == Category::Person)
+        .unwrap()
+        .id;
+    assert_eq!(review.variant_identity(person), Some(maya));
+}
+
+/// A case number's alias (ADR 0092) is generated, recognised and restored
+/// like any other, loose forms included.
+#[test]
+fn a_case_number_alias_restores_like_any_alias() {
+    let mut review = Review::default();
+    let source = "Claim No 6001842/2026";
+    review.refresh(source);
+    let group = review
+        .add_manual(source, 9..source.len(), Category::CaseNumber)
+        .unwrap();
+    let id = review.variant_identity(group).unwrap();
+    assert_eq!(review.identity(id).unwrap().alias, "CASE_1");
+    assert!(crate::generated_alias("CASE_1"));
+    let map = RestoreMap::new(vec![identity(
+        "CASE_1",
+        Category::CaseNumber,
+        &["6001842/2026"],
+    )]);
+    assert_eq!(
+        apply(&map, "Settle CASE_1 and case-1 by Friday."),
+        "Settle 6001842/2026 and 6001842/2026 by Friday."
+    );
+}
+
+#[test]
+fn reply_restoration_reads_a_legacy_marked_wording_without_stray_markers() {
+    for (original, expected) in [
+        (
+            "Pellam* *Rooke* *Holdings* *Ltd",
+            "Pellam Rooke Holdings Ltd",
+        ),
+        ("Integrated** **Sports Media", "Integrated Sports Media"),
+        ("Flat 2<sup>nd</sup>", "Flat 2nd"),
+    ] {
+        let map = RestoreMap::new(vec![ExportedIdentity {
+            alias: "ORG_1".into(),
+            previous: Vec::new(),
+            category: Category::Organization,
+            custom: false,
+            originals: vec![original.into()],
+        }]);
+        assert_eq!(
+            apply(&map, "**ORG_1** must deliver."),
+            format!("**{expected}** must deliver.")
+        );
+    }
+}
+
+#[test]
+fn saved_raw_originals_survive_reopen_relink_revert_and_join() {
+    for (original, category) in [
+        ("27 Wisp Lane<br>Norwich NR2 8ZZ", Category::Address),
+        ("Ann&#97; Petrova", Category::Person),
+        ("Pellam* *Industries Inc", Category::Organization),
+        ("Flat 2<sup>nd</sup>", Category::Address),
+        ("https://x.invalid/files/page_", Category::Url),
+        ("https://x.invalid/_drafts_/memo", Category::Url),
+    ] {
+        let wrapper = if original.contains('*') { "*" } else { "" };
+        let source = format!("| {wrapper}{original}{wrapper} |");
+        let start = 2 + wrapper.len();
+        let mut review = Review::default();
+        review
+            .ingest(
+                &source,
+                vec![Detection {
+                    range: start..start + original.len(),
+                    category,
+                    score: 0.9,
+                    recognizer: Recognizer::Model,
+                }],
+            )
+            .unwrap();
+        assert_eq!(review.remaining(), 1, "{original}");
+        let changed = apply_pending(&mut review, &source, 1);
+        let saved = review.export_identities();
+        assert_eq!(saved[0].originals, [Arc::<str>::from(original)]);
+        assert_eq!(RestoreMap::new(saved.clone()).identities(), saved);
+
+        let mut reopened = Review::default();
+        let ids = reopened.seed(&saved, &changed);
+        assert_eq!(reopened.relink(&changed, &saved, &ids, 7), 1);
+        let all = reopened.applied().iter().map(|a| a.id).collect();
+        let mut restored = changed.clone();
+        for (range, value) in reopened
+            .reversion_edits(&changed, &all)
+            .unwrap()
+            .iter()
+            .rev()
+        {
+            restored.replace_range(range.clone(), value);
+        }
+        assert_eq!(restored, source, "{original}");
+        let exported = reopened.export_identities_with_ids();
+        assert_eq!(exported[0].1.originals, saved[0].originals);
+        let joined = plan_join(&saved, &exported, &[]);
+        assert!(joined.changes.is_empty(), "{original}: {joined:?}");
+        assert!(joined.unmatched.is_empty(), "{original}: {joined:?}");
+    }
+}
+
+#[test]
+fn an_old_raw_case_keeps_its_alias_on_save() {
+    for (alias, category, original) in [
+        (
+            "ADDRESS_1",
+            Category::Address,
+            "27 Wisp Lane<br>Norwich NR2 8ZZ",
+        ),
+        ("PERSON_1", Category::Person, "Ann&#97; Petrova"),
+        ("PERSON_1", Category::Person, "Верес-\nтова Дарья Ильинична"),
+        ("PERSON_1", Category::Person, "Ма\u{ad}рина Лебедева"),
+        ("ORG_1", Category::Organization, "Pellam* *Industries Inc"),
+    ] {
+        let old = vec![identity(alias, category, &[original])];
+        let mut review = Review::default();
+        let source = format!("| {alias} |");
+        let ids = review.seed(&old, &source);
+        assert_eq!(review.relink(&source, &old, &ids, 1), 1, "{original}");
+        let exported = review.export_identities_with_ids();
+        assert_eq!(exported[0].1.originals, old[0].originals, "{original}");
+        assert_eq!(exported[0].1.alias, alias, "{original}");
+        let joined = plan_join(&old, &exported, &[]);
+        assert_eq!(joined, JoinPlan::default(), "{original}");
+    }
+}
+
+#[test]
+fn reply_decoding_is_narrow_and_never_changes_urls_or_emails() {
+    for original in [
+        "Ann&#97; Petrova",
+        "27 Wisp Lane<br>Norwich",
+        "_jdoe",
+        "Smith[^2]",
+        "Lee<sup>1</sup>",
+        "Pellam<sup>Ltd</sup>",
+        "И Н Н",
+        "Ма\u{ad}рина",
+        "Арте\u{308}м",
+        "Верес-\nтова",
+        "<b>Anna</b>",
+        "26<sup>t&#104;</sup>",
+    ] {
+        let expected = if original == "26<sup>t&#104;</sup>" {
+            "26t&#104;"
+        } else {
+            original
+        };
+        let map = RestoreMap::new(vec![identity("ORG_1", Category::Organization, &[original])]);
+        assert_eq!(apply(&map, "ORG_1"), expected);
+        assert_eq!(map.identities()[0].wording(), original);
+    }
+    for category in [Category::Url, Category::Email] {
+        for original in [
+            "https://x.invalid/files/page_",
+            "https://x.invalid/_drafts_/memo",
+            "ann_@x.invalid",
+            "ann_lee@x.invalid",
+            "A* *B",
+            "26<sup>th</sup>",
+        ] {
+            let alias = format!("{}_1", category.token());
+            let map = RestoreMap::new(vec![identity(&alias, category, &[original])]);
+            assert_eq!(apply(&map, &alias), original);
+        }
+    }
+}
+
+#[test]
+fn merging_keeps_the_targets_raw_primary_pin() {
+    // Equal-length raw forms: the target pin wins even though its variant
+    // was seen second. Reply decoding never changes the stored merge pin.
+    let first = "Quillon* *Trading Ltd";
+    let target = "Pellam* *Trading Ltd.";
+    assert_eq!(first.chars().count(), target.chars().count());
+    let source = format!("*{first}* and *{target}*");
+    let mut review = Review::default();
+    review.refresh(&source);
+    let a = review
+        .add_manual(&source, 1..1 + first.len(), Category::Organization)
+        .unwrap();
+    let at = source.find(target).unwrap();
+    let b = review
+        .add_manual(&source, at..at + target.len(), Category::Organization)
+        .unwrap();
+    let from = review.variant_identity(a).unwrap();
+    let to = review.variant_identity(b).unwrap();
+    review.merge_identity(from, to).unwrap();
+    assert_eq!(
+        review.identities.primary_wording(to).unwrap().as_ref(),
+        target
+    );
+    assert_eq!(review.export_identities()[0].wording(), target);
+    apply_pending(&mut review, &source, 1);
+    let exported = review.export_identities();
+    assert_eq!(exported[0].wording(), target);
+    let unique: HashSet<_> = exported[0].originals.iter().collect();
+    assert_eq!(unique.len(), exported[0].originals.len());
+}
+
+#[test]
+fn changing_raw_only_categories_invalidates_discovery_and_its_cached_patterns() {
+    let marked = "Pellam* *Industries Inc";
+    let plain = "Pellam Industries Inc";
+    let mut review = Review::default();
+    let ids = review.seed(&[identity("EMAIL_1", Category::Email, &[marked])], plain);
+    assert_eq!(review.remaining(), 0);
+    let before = review.identity_snapshot();
+    let old_input = review.discovery_input();
+    review
+        .recategorize_identity(ids[0], Category::Organization)
+        .unwrap();
+    let old_result = old_input
+        .run(&std::sync::atomic::AtomicBool::new(false))
+        .unwrap();
+    assert!(!review.apply_discovery(old_result));
+    review.refresh(plain);
+    assert_eq!(review.remaining(), 1);
+    assert_eq!(review.variants().last().unwrap().original.as_ref(), plain);
+    review.restore_identity_snapshot(before);
+    // A separate source never reached by the raw email seed stays literal
+    // after undo, even if the matcher was built while it was an organization.
+    let other = "Pellam** **Industries Inc";
+    review.refresh(other);
+    assert_eq!(review.remaining(), 0);
+}
+
+/// Round 3 of #564: an identity with a marked and a plain spelling restores
+/// the plain one into a reopened document, so no stray markers appear.
+#[test]
+fn a_reopened_mixed_identity_reverts_without_stray_markers() {
+    let source = "*Pellam* *Industries Inc* and Pellam Industries Inc agree.";
+    let marked = "Pellam* *Industries Inc";
+    let plain_at = source.rfind("Pellam Industries Inc").unwrap();
+    let mut review = Review::default();
+    review
+        .ingest(
+            source,
+            vec![
+                Detection {
+                    range: 1..1 + marked.len(),
+                    category: Category::Organization,
+                    score: 0.9,
+                    recognizer: Recognizer::Model,
+                },
+                Detection {
+                    range: plain_at..plain_at + "Pellam Industries Inc".len(),
+                    category: Category::Organization,
+                    score: 0.9,
+                    recognizer: Recognizer::Model,
+                },
+            ],
+        )
+        .unwrap();
+    assert_eq!(review.remaining(), 2);
+    let changed = apply_pending(&mut review, source, 1);
+    let saved = review.export_identities();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert_eq!(saved[0].originals[0].as_ref(), "Pellam Industries Inc");
+
+    let mut reopened = Review::default();
+    let ids = reopened.seed(&saved, &changed);
+    reopened.relink(&changed, &saved, &ids, 7);
+    let all = reopened.applied().iter().map(|a| a.id).collect();
+    let mut restored = changed.clone();
+    for (range, value) in reopened
+        .reversion_edits(&changed, &all)
+        .unwrap()
+        .iter()
+        .rev()
+    {
+        restored.replace_range(range.clone(), value);
+    }
+    assert_eq!(
+        restored,
+        "*Pellam Industries Inc* and Pellam Industries Inc agree."
+    );
+}
+
+/// Round 3 of #564: the wording a reply restores for a marked original is
+/// masked again when that text is pseudonymized (Copy for AI, the shelf).
+#[test]
+fn a_restored_marked_wording_is_pseudonymized_again() {
+    let map = RestoreMap::new(vec![ExportedIdentity {
+        alias: "ORG_1".into(),
+        previous: Vec::new(),
+        category: Category::Organization,
+        custom: false,
+        originals: vec!["Pellam* *Industries Inc".into()],
+    }]);
+    let restored = apply(&map, "ORG_1 must deliver.");
+    assert_eq!(restored, "Pellam Industries Inc must deliver.");
+    assert_eq!(
+        map.pseudonymize(&restored),
+        ("ORG_1 must deliver.".into(), 1)
+    );
+    // The raw spelling still matches, and a URL is matched raw only.
+    assert_eq!(map.pseudonymize("Pellam* *Industries Inc").1, 1);
+    let urls = RestoreMap::new(vec![ExportedIdentity {
+        alias: "URL_1".into(),
+        previous: Vec::new(),
+        category: Category::Url,
+        custom: false,
+        originals: vec!["https://x.invalid/files/page_".into()],
+    }]);
+    assert_eq!(
+        urls.pseudonymize("see https://x.invalid/files/page now").1,
+        0
+    );
+}

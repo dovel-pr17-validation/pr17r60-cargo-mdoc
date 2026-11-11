@@ -1,0 +1,389 @@
+# mdoc's rule pack, part 1 of 3: rules for any language (ADR 0092).
+# Compiled in with `include_str!`; `rules.rs` checks every entry when it
+# loads. The pack is shared.toml, then en.toml, then ru.toml.
+#
+# Sections:
+#   never     words that never name anyone on their own
+#   context   a label proposes a category for the value beside it
+#   shape     what a span of each category must look like, and what makes
+#             a manual selection that category
+#   span      whole spans by pattern (an address from its first element
+#             to its postcode or city), and boundary fixes for model spans
+#   variants  nicknames of given names, for names already in the document
+#   role_surnames lowercase occupational surnames kept when capitalized as PERSON
+#   reference legal references and markers no model span is inside
+#   private   bodies that are never public, whoever owns them
+#
+# Categories are written as their tokens: PERSON, ORG, EMAIL, PHONE,
+# ADDRESS, IDENTITY, TAX, BANK, CASE, DATE, REDACTED.
+#
+# A `context` entry proposes its `category` for the value after a label:
+#   labels  = […]    phrases, case ignored (only here), matched as whole
+#                    words; a space matches any run of whitespace
+#   between = regex  what may sit between the label and the value
+#   value   = regex  the value, never followed by a letter or digit; only it
+#                    is proposed, never the label
+# and optionally:
+#   min_digits     = n           a value with fewer digits is not proposed
+#   unless_after   = [word…]     no label just after one of these words
+#                                ("in case")
+#   unless_guessed = [category…] no value these categories' guesses take
+#   only_guessed   = [category…] only a value one of them takes
+# A context match wins over a model span on the same text.
+#
+# A `never` entry lists lowercase `words`, matched `whole`, `plural` (with an
+# `s`) or as a `stem` with up to `ending` letters. An entry matched as
+# `pattern` lists `patterns` instead, regexes: a model span of its
+# `anywhere_in` categories (required) that matches one outside quotes goes
+# like a court ("Department of Labor", "Massachusetts" alone). Optionally:
+#   last_word_of = [category…]  a model span of these categories ending in
+#                               one of the words is dropped (a role phrase)
+#   not_endings  = [ending…]    for a stem: endings that never count (a
+#                               surname's "-ов" after a role stem)
+#   anywhere_in  = [category…]  a model span of these categories with one of
+#                               the words anywhere outside quotes is dropped
+#                               (a court) after the span fixes, unless it
+#                               has a legal form
+#   unless_named = true         common words ("He", "Program", "French"):
+#                               no name alone, but in a person's span a
+#                               name after a title ("Mr He") or where
+#                               another person span has the word beside a
+#                               name ("Dawn French"); decided after the span
+#                               fixes. One initial before one names no one
+#                               ("B. General Terms"). Takes no anywhere_in,
+#                               and last_word_of only for categories other
+#                               than PERSON ("Bright Paths Program")
+#   unless_titled = true        with PERSON in anywhere_in: a person's
+#                               title before the span keeps it as a person
+#                               ("Ms St. Louis"), and for a stem initials
+#                               do too where the span is a name alone
+#                               ("Суд Н. О."); a pattern entry needs
+#                               anywhere_in PERSON alone
+#   person_role = true          with unless_named: an initial + capitalized
+#                               role remains PERSON; plural surnames must
+#                               be listed in role_surnames
+#   phrase_only = true          with unless_named alone: role modifiers count
+#                               only beside a role head, never alone
+#   person_endings = [ending…]  for a stem with PERSON in anywhere_in: in
+#                               a person's span the stem counts only with
+#                               one of these endings ("" for none), the
+#                               word's own forms; any other makes a
+#                               surname ("Судник", "Приставко")
+#   surname_endings = [ending…] with person_endings: those of them that
+#                               make a surname of a capitalized word
+#                               ("Судов", but "судов общей юрисдикции")
+#
+# A `span` entry for a `category` is one of two kinds. With a `pattern`
+# it proposes each match as a whole span; `{name}` in the pattern stands
+# for `parts.name`, a regex; a group named `lead` or `tail` is context the
+# span leaves out ("адресу " before a city). A match wins over a model
+# span inside it and gives way to a model span of its category that
+# reaches past it, a span of another category across its edge and any
+# other rule's span in it; a match before a colon (a field's label) goes. Without a pattern an entry
+# fixes a model span's boundaries, in this order:
+#   extend    = [regex…]  a span inside a match grows to the whole match
+#                         (the longest, when several hold it), never
+#                         into part of another span of its category, and
+#                         a person's never over a `never` word (a role);
+#                         earlier spans grow first
+#   trim_start = [regex…] case-sensitive prefixes that come off the start,
+#                         with some name left after them
+#   trim      = […]       lowercase words that come off either edge, a
+#                         word's own final period or colon with it, and
+#                         a comma before a trailing one; or phrases of them,
+#                         single-spaced ("in re"), with a word left beside
+#   role_trim = true      for ORG role words/phrases: require comma, dash,
+#                         colon or leading for; keep the whole span if
+#                         the remainder does not identify an organization
+#   strip_end = "…"       punctuation that comes off the end, except an
+#                         initial's period
+#   person_before = […]   for ORG: lowercase words that, ending a span, make
+#                         it a person's document ("Ostrand Decl."): the
+#                         words before become a person's span when a person
+#                         span holds each of them
+# A fixed span left without its category's shape goes. An entry takes one
+# kind's keys only.
+#
+# A `reference` entry is a legal reference or a marker that is no
+# identifier, address or name (the fixture guide's rule 8): "424 U.S. at
+# 38", "26 U.S.C. § 6212", "127-ФЗ", "статьи 431 ГК РФ". A model span of any
+# category inside a match is never proposed; one reaching past it stays (a
+# real number beside a citation), and labelled values (`context`) and the
+# structured rules are never checked against it. `pattern` and `parts` work
+# as in a `span` pattern, `lead` and `tail` groups included; a match stays
+# on one line.
+#
+# A `reference` whose pattern has groups named `party`, `party2`, … is a
+# cited case ("Pellam v. Ostrand, 912 F.3d 455"), its parties those groups.
+# Its matches are searched over the whole text (a match may wrap), after the
+# span fixes. A name inside one goes unless it names a party of the case at
+# hand: a name the model found outside every cited case, a word of the
+# document's caption, or a name beside a role or after a title. Any other
+# model span inside a cited case naming no such party goes, and so does a
+# labelled case number (`context`) there. A `docket` group marks a citation
+# by docket number, which a caption may carry too. Such an entry may list
+# `roles`, lowercase words ("plaintiff") that make the name beside them a
+# party of the case at hand, and `own_before`, phrases ("under appeal")
+# that make the cited case after them the case at hand's, for every cited
+# case in the pack. Short forms ("in Pellam") are not cited cases (#561).
+#
+# A `private` entry lists `patterns`, regexes: a span that matches one,
+# quotes and legal form included, is never a court or public body,
+# whatever `never` says ("ФГБОУ ВО «… университет»", "Негосударственный
+# пенсионный фонд «…»"), unless it matches one of its optional `unless`
+# regexes too ("Electoral College"). Anchor the patterns: a public body
+# may have the word inside ("Ministry of Colleges and Universities").
+#
+# A `shape` entry has any of:
+#   require = [regex…]  a model span must match each one somewhere
+#   forbid  = [regex…]  a model span must match none
+#   word    = regex     some word of a model span (trimmed of punctuation
+#                       other than `-`) must match it and not be a `never`
+#                       word; one per category in the whole pack
+#   guess   = [regex…]  a manual selection that matches one in full is this
+#                       category
+#   guess_words = […]   a manual selection with one of these words (ASCII
+#                       case ignored) is this category
+#   forbid_quotes = ["«»"…]  a model span wrapped exactly in one of these
+#                       quote pairs is not this category
+#   quotes_after  = […] lowercase stems: then only after a word written in
+#                       lowercase that is one with a noun's case ending
+#                       ("повести «…»", not "Роман «…»", "рассказал «…»")
+#   quotes_after_words = […]  or after one of these words as written ("ПО
+#                       «…»", not "по «…»"); a span holding its own quotes
+#                       counts as wrapped
+# In these regexes `\p{Uppercase}`, `\p{Alphabetic}` and `\p{N}` mean what
+# Rust's `char` predicates mean, whose Unicode tables may be newer than the
+# regex crate's.
+#
+# A category with no entry takes any span. Manual selections try each
+# category's guesses in the order the categories first appear in the pack.
+
+# Context rules are per language.
+context = []
+
+# Span patterns and fixes are per language.
+span = []
+
+# Nicknames, as [[variants]] with `name` and its `forms`. None yet.
+variants = []
+
+# References are per language.
+reference = []
+
+# No language-free never words.
+never = []
+
+# Dates: 12.03.2026 (optionally "г."), 2026-03-12, and blank forms to fill
+# in by hand (`«__» ____ 2026 г.`, underscores possibly escaped as `\_`).
+# Surrounding spaces are ignored. A year or a month alone is not a date.
+[[shape]]
+category = "DATE"
+guess = [
+    '(?i)\s*\d{1,2}[./]\d{1,2}[./]\d{2,4}(?:\s*г\.?)?\s*',
+    '\s*\d{4}-\d{2}-\d{2}\s*',
+    '(?i)\s*[«"]?(?:\d{1,2}|(?:\\?_)+)[»"]?\s+(?:\\?_)+\s+(?:\d{4}|(?:\\?_)+)(?:\s*(?:г\.?|года))?\s*',
+]
+
+# Phones: a model span needs a digit; a manual selection of at least seven
+# digits with only spaces, `+`, brackets and dashes between is a phone. No
+# phone number has 16 digits in a row (E.164 allows 15), and a bare nine-digit
+# number starting 04 is a Russian bank code (БИК), not a phone.
+[[shape]]
+category = "PHONE"
+require = ['\p{N}']
+forbid = ['\p{N}{16,}', '^\s*04\d{7}\s*$']
+guess = ['[ +()\-\x{a0}]*(?:[0-9][ +()\-\x{a0}]*){7,}']
+
+# Organizations: a capital or digit, and a word that is not a never word
+# ("the Employer" is not one). Continental legal forms mark one. A bare site
+# domain is no organization ("NALOG.GOV.RU", "example.invalid", "сайт.рф",
+# "Grants.gov"; issue #488): two letters or more before a common zone, so
+# "E.ON" and "Alfa.Bank" stay.
+[[shape]]
+category = "ORG"
+require = ['[\p{Uppercase}\p{N}]']
+forbid = ['(?i)^\s*[«"]?(?:https?://)?(?:[a-z0-9а-яё-]+\.)*[a-z0-9а-яё-]{2,}\.(?:ru|su|рф|рус|com|org|net|info|biz|io|pro|online|site|app|dev|me|eu|uk|us|de|by|kz|ua|gov|edu|mil|int|invalid|example|test)/?[»"]?\s*$']
+word = '.'
+guess_words = ["GmbH", "AG", "SA", "BV"]
+
+# People: a capitalized word that is not a never word ("Ms Bennett", not
+# "Ms" or "husband"). A manual selection of 1–4 capitalized words is a
+# person; hyphenated surnames, apostrophes and initials ("М.С.", "J.R.")
+# count.
+[[shape]]
+category = "PERSON"
+word = '^\p{Uppercase}'
+guess = [
+    '\s*(?:(?:\p{Uppercase}\.)+|\p{Uppercase}[\p{Alphabetic}\x27’]*(?:-\p{Uppercase}[\p{Alphabetic}\x27’]*)*)(?:\s+(?:(?:\p{Uppercase}\.)+|\p{Uppercase}[\p{Alphabetic}\x27’]*(?:-\p{Uppercase}[\p{Alphabetic}\x27’]*)*)){0,3}\s*',
+]
+
+# A name wrapped exactly in «» after a common noun for a work or a product
+# is a title ("повести «Кедровый свет»"), not a person. A name quoted
+# elsewhere stays a person ("назван «Иван Петров»", "по прозвищу «…»",
+# "Роман «Сокол»"), and so does one after a company's legal form, which the
+# ORG span holds ("ООО «Вера Снегирь»"): never dropped, at worst the wrong
+# category.
+[[shape]]
+category = "PERSON"
+forbid_quotes = ["«»"]
+quotes_after = [
+    "повест", "роман", "рассказ", "новелл", "книг", "рукопис", "сборник",
+    "стих", "поэм", "пьес", "сценари", "журнал", "газет", "издани", "стать",
+    "фильм", "сериал", "мультфильм", "песн", "альбом", "спектакл",
+    "постановк", "картин", "произведени", "проект", "программ", "сайт",
+    "приложени", "бренд", "марк", "знак", "игра", "игры", "игре", "игру",
+    "шоу", "передач", "выставк", "фестивал", "конкурс",
+]
+
+# Emails need an `@` and a dotted domain; the model also tags the word
+# "email", bare domains and "not-a-mail@localhost".
+[[shape]]
+category = "EMAIL"
+require = ['@[^@\s]+\.\p{Alphabetic}{2,}']
+
+# Addresses need a capital or a digit, and a word that is not a never word:
+# "addresses" or "Address" alone is not one. They also need a house or
+# postcode number, a street word, abbreviated or not ("пер. Кленовый",
+# "Cedar Court"), or a comma or line break between parts ("The Old
+# Rectory, Nether Compton"): a city alone ("Cardiff", "Москва") is not an address (issue
+# #386).
+[[shape]]
+category = "ADDRESS"
+require = [
+    '[\p{Uppercase}\p{N}]',
+    '\p{N}|,|\n|(?i:\b(?:ул|улица|пр-т|пр|проспект|пер|переулок|наб|набережная|б-р|бульвар|пл|площадь|ш|шоссе|проезд|тупик|аллея|линия|тракт|просека|мкр|микрорайон|квартал|road|street|lane|ln|avenue|boulevard|blvd|mews|close|court|drive|dr|way|place|square|crescent|gardens|terrace|yard|row|hill|grove|walk|parade|rd|st|ave)\b)',
+]
+word = '.'
+
+# Identity documents need a digit; "passport" alone is not one.
+[[shape]]
+category = "IDENTITY"
+require = ['\p{N}']
+
+# Tax identifiers need a digit; "ИНН" alone is not one. A rate ("20 percent
+# tax", "НДС 20%") is no identifier, and neither is a Russian document series
+# before its number ("ФС 086731924", a writ).
+[[shape]]
+category = "TAX"
+require = ['\p{N}']
+forbid = ['(?i)percent|per cent|%|процент', '[А-ЯЁа-яё]{2,}\s+\d']
+
+# Bank details need a digit and no `/` beside a digit: case and claim
+# numbers ("6001842/2026") are not bank details, while an account's label
+# ("р/с", "a/c") is trimmed off its span (#486). A bare ten- or
+# eleven-digit number is a tax number, a phone or a contract number far
+# more often than an account (Russian accounts have 20 digits, UK ones 8
+# with a sort code): only a label makes it bank details.
+[[shape]]
+category = "BANK"
+require = ['\p{N}']
+forbid = ['\p{N}\s*/|/\s*\p{N}', '^\s*\d{10,11}\s*$']
+
+# Numbers that are no tax, bank, identity or phone value, whatever the
+# model guessed (guide rules 6 and 8, issue #486): digits grouped by commas
+# ("8,420,710", a US patent or an amount; "12/432,845", a patent
+# application), a span across a blank line (a page's footer), and a
+# document's code with its country after a dot ("STD001Y2K.UK", a form).
+# An account's decimals ("12345.67"), a passport's groups ("4510 123456")
+# and an IBAN's ("GB29 NWBK 6016 …") stay.
+[[shape]]
+category = "TAX"
+forbid = [
+    '^\s*(?:\d{1,2}/)?\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?\s*$',
+    '\n[\p{Zs}\t]*\r?\n',
+    '^\s*[A-Z]{2,}[A-Z0-9]*\d[A-Z0-9]*\.[A-Z]{2,3}\s*$',
+]
+
+# The same as bank details.
+[[shape]]
+category = "BANK"
+forbid = [
+    '^\s*(?:\d{1,2}/)?\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?\s*$',
+    '\n[\p{Zs}\t]*\r?\n',
+    '^\s*[A-Z]{2,}[A-Z0-9]*\d[A-Z0-9]*\.[A-Z]{2,3}\s*$',
+]
+
+# The same as an identity document's number.
+[[shape]]
+category = "IDENTITY"
+forbid = [
+    '^\s*(?:\d{1,2}/)?\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?\s*$',
+    '\n[\p{Zs}\t]*\r?\n',
+    '^\s*[A-Z]{2,}[A-Z0-9]*\d[A-Z0-9]*\.[A-Z]{2,3}\s*$',
+]
+
+# The same as a phone, and a page number between dashes ("-44-", "– 12 –")
+# is no phone either; "555-12-34" keeps its dashes between digits.
+[[shape]]
+category = "PHONE"
+forbid = [
+    '^\s*(?:\d{1,2}/)?\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?\s*$',
+    '\n[\p{Zs}\t]*\r?\n',
+    '(?:^|\s)[-–—][\p{Zs}\t]?\p{N}{1,4}[\p{Zs}\t]?[-–—](?:\s|$)',
+]
+
+# A GUID is a document's or a record's, no tax, bank or phone value
+# ("b539f4a9-4e5f-4abb-bec6-aae430c254f2", a power of attorney's; issue
+# #486), and neither is one token mixing lower and upper case letters, a
+# link's query value ("AfmBOorJnJ4Ys9vL"). Three lower case letters in a
+# row at least: an OCR-damaged number ("77l12345O7") stays.
+[[shape]]
+category = "TAX"
+forbid = [
+    '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',
+    '^\s*[A-Za-z0-9_-]*(?:[a-z]{3}[A-Za-z0-9_-]*[A-Z]|[A-Z][A-Za-z0-9_-]*[a-z]{3})[A-Za-z0-9_-]*\s*$',
+]
+
+# The same as bank details.
+[[shape]]
+category = "BANK"
+forbid = [
+    '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',
+    '^\s*[A-Za-z0-9_-]*(?:[a-z]{3}[A-Za-z0-9_-]*[A-Z]|[A-Z][A-Za-z0-9_-]*[a-z]{3})[A-Za-z0-9_-]*\s*$',
+]
+
+# The same as a phone.
+[[shape]]
+category = "PHONE"
+forbid = [
+    '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',
+    '^\s*[A-Za-z0-9_-]*(?:[a-z]{3}[A-Za-z0-9_-]*[A-Z]|[A-Z][A-Za-z0-9_-]*[a-z]{3})[A-Za-z0-9_-]*\s*$',
+]
+
+# Web addresses (ADR 0094, guide rule 9). Scans propose a URL by its shape:
+# a scheme (`http://`, `https://`, `ftp://`), `www.`, or a bare domain
+# written as an address (no space, not inside an email) that ends in one of
+# the `zones` below. The span runs from the scheme (or `www.`, or the bare
+# domain) to the address's end, without trailing punctuation. `mailto:` and
+# `tel:` stay EMAIL and PHONE.
+#
+# A `url` entry has any of:
+#   zones  = […]  lowercase top-level domains a bare domain may end with;
+#                 a file name's extension is no zone ("readme.md", "run.sh")
+#   public = […]  lowercase domains never proposed, with their subdomains:
+#                 courts, public bodies, laws and legal databases (guide
+#                 rule 8). "gov" holds every "*.gov", so no entry lists a
+#                 subdomain of another. A site that also hosts personal
+#                 pages is listed by its legal sub-host only
+#                 ("law.justia.com", not "justia.com" with its lawyers'
+#                 profiles).
+# A bare domain's zone is written in lower case, or its whole host in
+# capitals ("FORMY.SVOD.INVALID"); before a two-letter zone its name has
+# three letters or more ("ГК.РФ" is no address).
+# A domain with a scheme or `www.` needs no zone.
+[[url]]
+zones = [
+    "com", "org", "net", "info", "biz", "io", "pro", "online", "site",
+    "app", "dev", "me", "co", "eu", "uk", "us", "de", "fr", "it", "es",
+    "nl", "pl", "ch", "at", "be", "cz", "ee", "lv", "lt", "fi", "se", "no",
+    "dk", "ie", "ca", "au", "nz", "cy", "ge", "am", "az", "by", "kz", "kg",
+    "uz", "ua", "ru", "su", "рф", "рус", "invalid", "example", "test",
+]
+# International and common-law public and legal sites: any `.gov`, `.int`
+# and `.mil`, the EU's and the UN's; and the domains reserved for examples
+# (RFC 2606), which point to no one ("the reserved example.com domain").
+public = [
+    "gov", "int", "mil", "example.com", "example.org", "example.net",
+    "europa.eu", "un.org", "courtlistener.com", "law.cornell.edu",
+]

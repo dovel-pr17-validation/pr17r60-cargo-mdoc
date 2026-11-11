@@ -1,0 +1,357 @@
+// Exercise the shipping worker rather than the headless UI test adapter.
+use mdoc_import::docx_preview::{PreviewError, render_with_executable};
+use std::{
+    path::Path,
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
+
+#[test]
+fn real_worker_renders_searchable_pdf_and_reports_failure() {
+    let executable = Path::new(env!("CARGO_BIN_EXE_mdoc"));
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/import/text.docx");
+    let original = std::fs::read(&source).unwrap();
+    let preview = render_with_executable(
+        &source,
+        Arc::new(AtomicBool::new(false)),
+        executable,
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let pdf = gpui_pdf::parse(Arc::new(std::fs::read(&preview.pdf_path).unwrap())).unwrap();
+    assert!(!pdf.pages().is_empty());
+    let text = gpui_pdf::extract_page_text(&pdf, 0).unwrap().text();
+    assert!(!text.trim().is_empty());
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    let artifact = preview.pdf_path.clone();
+    drop(preview);
+    let cleanup_started = std::time::Instant::now();
+    while artifact.exists() {
+        assert!(cleanup_started.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let result = render_with_executable(
+        Path::new("missing.docx"),
+        Arc::new(AtomicBool::new(false)),
+        executable,
+        Duration::from_secs(30),
+    );
+    assert!(matches!(result, Err(PreviewError::Read(_))));
+    // The worker reports what kind of failure it was, so a damaged package
+    // is not shown as a failed worker with Retry.
+    let result = render_with_executable(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/import/truncated--errors.docx"),
+        Arc::new(AtomicBool::new(false)),
+        executable,
+        Duration::from_secs(30),
+    );
+    let error = result.err().unwrap();
+    assert!(matches!(error, PreviewError::Package(_)), "{error}");
+    assert!(!error.retryable());
+    assert!(
+        !std::process::Command::new(executable)
+            .arg("--mdoc-docx-worker")
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn timeout_and_cancellation_kill_and_reap_worker() {
+    use std::{os::unix::fs::PermissionsExt, sync::atomic::Ordering, time::Instant};
+    let dir = tempfile::tempdir().unwrap();
+    let executable = dir.path().join("worker");
+    let pid = dir.path().join("pid");
+    // The worker writes its pid before anything else, then hangs.
+    std::fs::write(&executable, "#!/bin/sh\necho $$ > \"$2\"\nexec sleep 60\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Enough time for the shell to start on a loaded machine running test
+    // binaries in parallel (nextest), so the kill usually hits a live worker.
+    let result = render_with_executable(
+        &pid,
+        Arc::new(AtomicBool::new(false)),
+        &executable,
+        Duration::from_secs(5),
+    );
+    assert!(matches!(result, Err(PreviewError::Timeout)));
+    // Whenever the worker got as far as its pid, it must be dead and reaped
+    // (a zombie still answers `kill -0`). No pid, or an empty file, means it
+    // was killed before it started.
+    let assert_dead = || {
+        let worker_pid = std::fs::read_to_string(&pid).unwrap_or_default();
+        let worker_pid = worker_pid.trim();
+        assert!(
+            worker_pid.is_empty()
+                || !std::process::Command::new("kill")
+                    .args(["-0", worker_pid])
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .unwrap()
+                    .success()
+        );
+    };
+    assert_dead();
+    let _ = std::fs::remove_file(&pid);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    std::thread::scope(|scope| {
+        let cancel = cancelled.clone();
+        let pid = &pid;
+        scope.spawn(move || {
+            let start = Instant::now();
+            // Within the worker's 10 s timeout, which would end the run first.
+            while !pid.exists() {
+                assert!(start.elapsed() < Duration::from_secs(9));
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            cancel.store(true, Ordering::Relaxed);
+        });
+        let result = render_with_executable(pid, cancelled, &executable, Duration::from_secs(10));
+        assert!(matches!(result, Err(PreviewError::Cancelled)));
+    });
+    assert_dead();
+}
+
+#[cfg(unix)]
+#[test]
+fn crash_and_false_success_are_failures() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let executable = dir.path().join("worker");
+    for status in [0, 9] {
+        std::fs::write(&executable, format!("#!/bin/sh\nexit {status}\n")).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(
+            render_with_executable(
+                Path::new("unused"),
+                Arc::new(AtomicBool::new(false)),
+                &executable,
+                Duration::from_secs(5)
+            ),
+            Err(PreviewError::Render(_))
+        ));
+    }
+}
+
+#[test]
+fn oversize_input_is_rejected_in_the_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("oversized.docx");
+    std::fs::File::create(&source)
+        .unwrap()
+        .set_len(50 * 1024 * 1024 + 1)
+        .unwrap();
+    let result = render_with_executable(
+        &source,
+        Arc::new(AtomicBool::new(false)),
+        Path::new(env!("CARGO_BIN_EXE_mdoc")),
+        Duration::from_secs(30),
+    );
+    assert!(matches!(result, Err(PreviewError::InputTooLarge)));
+}
+
+#[test]
+fn coverage_corpus_preserves_text_links_and_landscape() {
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docx-preview/coverage.docx");
+    let started = std::time::Instant::now();
+    let preview = render_with_executable(
+        &source,
+        Arc::new(AtomicBool::new(false)),
+        Path::new(env!("CARGO_BIN_EXE_mdoc")),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let conversion = started.elapsed();
+    let pdf = gpui_pdf::parse(Arc::new(std::fs::read(&preview.pdf_path).unwrap())).unwrap();
+    let first_page = gpui_pdf::render_page(&pdf, 0, 1.0, gpui_pdf::PageTone::Original).unwrap();
+    assert!(
+        first_page
+            .as_bytes(0)
+            .unwrap()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[2] > 200 && p[0] < 50 && p[1] < 50),
+        "embedded red image must be visible"
+    );
+    eprintln!(
+        "coverage worker={conversion:?}, through first raster={:?}, pages={}",
+        started.elapsed(),
+        pdf.pages().len()
+    );
+    let text = (0..pdf.pages().len())
+        .filter_map(|i| gpui_pdf::extract_page_text(&pdf, i))
+        .map(|p| p.text())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for expected in [
+        "Qualification heading",
+        "Привет мир",
+        "Проверка поиска",
+        "Merged horizontal",
+        "Merged vertical",
+        "Cell alpha",
+        "Cell beta",
+        "List level 0",
+        "List level 1",
+        "Example hyperlink",
+        "Qualification header",
+        "Qualification footer",
+        "Footnote content",
+        "Page marker 9",
+        "Landscape final section",
+    ] {
+        assert!(
+            text.chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+                .contains(
+                    &expected
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect::<String>()
+                ),
+            "missing {expected:?} in {text}"
+        );
+    }
+    assert!(gpui_pdf::page_dims(&pdf).iter().any(|(w, h)| w > h));
+    assert!(gpui_pdf::page_links(&pdf).iter().flatten().any(|link| matches!(&link.target, gpui_pdf::LinkTarget::Uri(uri) if uri == "https://example.com")));
+    assert!(preview.warnings.is_empty(), "{:?}", preview.warnings);
+}
+
+#[test]
+fn legal_opinion_justified_heading_preserves_word_spaces() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/docx-preview/legal-opinion.docx");
+    let preview = render_with_executable(
+        &source,
+        Arc::new(AtomicBool::new(false)),
+        Path::new(env!("CARGO_BIN_EXE_mdoc")),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    let pdf = gpui_pdf::parse(Arc::new(std::fs::read(&preview.pdf_path).unwrap())).unwrap();
+    let page = gpui_pdf::extract_page_text(&pdf, 0).unwrap();
+    // Text alone is insufficient: invisible space glyphs can make extraction
+    // correct even when the visible words touch. Check the glyph outlines too.
+    let page_width = gpui_pdf::page_dims(&pdf)[0].0;
+    for (left, right) in [("Investment", "and"), ("Refund", "Part")] {
+        let before = page.find_matches(left)[0][0];
+        let after = page
+            .find_matches(right)
+            .into_iter()
+            .flatten()
+            .filter(|r| r.x > before.x && (r.y - before.y).abs() < 0.002)
+            .min_by(|a, b| a.x.total_cmp(&b.x))
+            .unwrap();
+        let gap = (after.x - before.x - before.w) * page_width;
+        assert!(
+            gap >= 2.0,
+            "{left} / {right} has only {gap:.2} pt of visible space"
+        );
+    }
+    let text = page.text();
+    assert!(
+        text.contains(
+            "Partnership of Investment and Plan Collateral Arrangement in the Refund Part Transfer"
+        ),
+        "heading lost its word boundaries: {text}"
+    );
+}
+
+#[test]
+fn worker_preserves_comments_and_source() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/docx-preview/comments.docx");
+    let original = std::fs::read(&path).unwrap();
+    let preview = render_with_executable(
+        &path,
+        Arc::new(AtomicBool::new(false)),
+        Path::new(env!("CARGO_BIN_EXE_mdoc")),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    assert_eq!(preview.comments.len(), 4);
+    let c = &preview.comments[0];
+    assert_eq!(c.author, "Reviewer");
+    assert_eq!(c.date, "2026-09-19T10:00:00Z");
+    assert_eq!(
+        c.text,
+        "Please check this clause.\nSecond line: & <literal>."
+    );
+    assert_eq!(c.quote, "First quoted paragraph. Second quoted paragraph.");
+    assert_eq!(preview.comments[1].author, "Ирина");
+    assert_eq!(preview.comments[1].text, "Проверить условия.");
+    assert_eq!(preview.comments[1].quote, "Second quoted paragraph.");
+    assert_eq!(preview.comments[2].quote, "Point comment context.");
+    assert_eq!(preview.comments[3].quote, "");
+    assert!(
+        !preview
+            .warnings
+            .iter()
+            .any(|w| w.contains("Comments are omitted"))
+    );
+    let pdf = gpui_pdf::parse(Arc::new(std::fs::read(&preview.pdf_path).unwrap())).unwrap();
+    assert!(gpui_pdf::render_page(&pdf, 0, 1.0, gpui_pdf::PageTone::Original).is_ok());
+    let text = gpui_pdf::extract_page_text(&pdf, 0).unwrap().text();
+    assert!(text.contains("First"));
+    assert!(text.contains("Second"));
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
+#[test]
+#[ignore = "requires locally uploaded examples"]
+fn uploaded_comments_preserved() {
+    for (name, count) in [
+        (
+            "adcourt-legal-opinion-meruna-trading-tax-and-14-pages.docx",
+            1,
+        ),
+        ("cloud-request-double-cloud-2022-01-27.docx", 5),
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/docx-preview")
+            .join(name);
+        let preview = render_with_executable(
+            &path,
+            Arc::new(AtomicBool::new(false)),
+            Path::new(env!("CARGO_BIN_EXE_mdoc")),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        assert_eq!(preview.comments.len(), count);
+        // Empty comments are legal (the cloud-request example contains two).
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(std::fs::read(&path).unwrap())).unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("word/comments.xml").unwrap(), &mut xml)
+            .unwrap();
+        let original = roxmltree::Document::parse(&xml).unwrap();
+        let ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        for comment in &*preview.comments {
+            let node = original
+                .descendants()
+                .find(|n| {
+                    n.has_tag_name((ns, "comment"))
+                        && n.attribute((ns, "id")) == Some(comment.id.as_str())
+                })
+                .unwrap();
+            let body = node
+                .descendants()
+                .filter(|n| n.has_tag_name((ns, "t")))
+                .filter_map(|n| n.text())
+                .collect::<String>();
+            assert_eq!(compact(&comment.text), compact(&body));
+            assert_eq!(
+                comment.author,
+                node.attribute((ns, "author")).unwrap_or_default()
+            );
+        }
+        let pdf = gpui_pdf::parse(Arc::new(std::fs::read(&preview.pdf_path).unwrap())).unwrap();
+        assert!(gpui_pdf::render_page(&pdf, 0, 1.0, gpui_pdf::PageTone::Original).is_ok());
+    }
+}

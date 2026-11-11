@@ -1,0 +1,949 @@
+# mdoc's rule pack, part 3 of 3: Russian. Sections and fields are described
+# in shared.toml.
+
+
+# No Russian nicknames yet.
+variants = []
+
+# These occupational surnames must stay PERSON if role vocabulary grows.
+role_surnames = ["судья", "староста", "голова", "кузнец", "бухгалтер"]
+
+# An organization's legal form and quotes belong to its name: the model's
+# "Северный Вектор" inside "ООО «Северный Вектор»" grows to the whole of it,
+# as does "Елагин и партнёры" in "коллегия адвокатов «Елагин и партнёры»"
+# (guide rule 2, #374). Straight quotes count too.
+[[span]]
+category = "ORG"
+extend = [
+    '\b(?:ООО|ОАО|ЗАО|ПАО|АО|НКО|АНО|[Кк]оллегия адвокатов|[Аа]двокатское бюро)\s*«[^«»\n]+»',
+    '\b(?:ООО|ОАО|ЗАО|ПАО|АО|НКО|АНО|[Кк]оллегия адвокатов|[Аа]двокатское бюро)\s*"[^"\n]+"',
+]
+
+# A state or municipal institution's quoted name belongs to the institution,
+# so the public-body `never` words below reach it: the model's "Дирекция
+# парков" in "ГКУ города Ольховска «Дирекция парков»" grows to the
+# whole of it and goes (guide rule 8, issue #378). The institution's city or
+# region, of up to two words, may stand between ("ГБУ Северной области «…»",
+# "ГКУ города Нижнего Ольховска «…»"), or its region's short name ("ГБУ СО
+# «…»"). A person's span there grows the same way (below).
+[[span]]
+category = "ORG"
+extend = [
+    '\b(?:ГКУ|ГБУ|ГАУ|ФГБУ|ФГКУ|ФГАУ|ФКУ|МКУ|МБУ|ГБОУ|ФГБОУ|МБОУ|ГБУЗ)(?:[\p{Zs}\t]+(?:\p{Uppercase}{2,4}|(?:города|г\.)[\p{Zs}\t]*\p{Uppercase}[\p{Alphabetic}-]*(?:[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*)?|\p{Uppercase}[\p{Alphabetic}-]*[\p{Zs}\t]+(?:\p{Alphabetic}+[\p{Zs}\t]+)?(?:области|края|округа|района|[Рр]еспублики)|Республики[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*(?:[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*)?))?[\p{Zs}\t]*[«"][^«»"\n]+[»"]',
+    '\b(?:[Фф]едеральн|[Гг]осударственн|[Мм]униципальн)\p{Alphabetic}*[\p{Zs}\t]+(?:\p{Alphabetic}+[\p{Zs}\t]+){0,2}учреждени\p{Alphabetic}*(?:[\p{Zs}\t]+(?:(?:города|г\.)[\p{Zs}\t]*\p{Uppercase}[\p{Alphabetic}-]*(?:[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*)?|\p{Uppercase}[\p{Alphabetic}-]*[\p{Zs}\t]+(?:\p{Alphabetic}+[\p{Zs}\t]+)?(?:области|края|округа|района|[Рр]еспублики)|Республики[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*(?:[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*)?))?[\p{Zs}\t]*[«"][^«»"\n]+[»"]',
+]
+
+# The same for a person: the model's "Кедровый дом-интернат" as a person in
+# "ГБУ СО «Кедровый дом-интернат»" grows to the institution and goes
+# (issue #378).
+[[span]]
+category = "PERSON"
+extend = [
+    '\b(?:ГКУ|ГБУ|ГАУ|ФГБУ|ФГКУ|ФГАУ|ФКУ|МКУ|МБУ|ГБОУ|ФГБОУ|МБОУ|ГБУЗ)(?:[\p{Zs}\t]+(?:\p{Uppercase}{2,4}|(?:города|г\.)[\p{Zs}\t]*\p{Uppercase}[\p{Alphabetic}-]*(?:[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*)?|\p{Uppercase}[\p{Alphabetic}-]*[\p{Zs}\t]+(?:\p{Alphabetic}+[\p{Zs}\t]+)?(?:области|края|округа|района|[Рр]еспублики)|Республики[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*(?:[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*)?))?[\p{Zs}\t]*[«"][^«»"\n]+[»"]',
+    '\b(?:[Фф]едеральн|[Гг]осударственн|[Мм]униципальн)\p{Alphabetic}*[\p{Zs}\t]+(?:\p{Alphabetic}+[\p{Zs}\t]+){0,2}учреждени\p{Alphabetic}*(?:[\p{Zs}\t]+(?:(?:города|г\.)[\p{Zs}\t]*\p{Uppercase}[\p{Alphabetic}-]*(?:[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*)?|\p{Uppercase}[\p{Alphabetic}-]*[\p{Zs}\t]+(?:\p{Alphabetic}+[\p{Zs}\t]+)?(?:области|края|округа|района|[Рр]еспублики)|Республики[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*(?:[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*)?))?[\p{Zs}\t]*[«"][^«»"\n]+[»"]',
+]
+
+# A public-law company's quoted name belongs to the company, so the
+# public-body `never` words below reach it: the model's "Фонд развития
+# территорий" in "ППК «Фонд развития территорий»" or "публично-правовой
+# компании «Роскадастр»" grows to the whole of it and goes (guide rule 8,
+# the maintainer's decision on #484, item 4).
+[[span]]
+category = "ORG"
+extend = [
+    '\b(?:ППК|[Пп]ублично-правов\p{Alphabetic}*[\p{Zs}\t]+компани\p{Alphabetic}*)[\p{Zs}\t]*[«"][^«»"\n]+[»"]',
+]
+
+# Titles stay outside a person's span: "г-жа Павлова" is "Павлова" (guide
+# rule 1, #382). An entrepreneur's «ИП» comes off by its own case-sensitive
+# trim_start below (#562), so the surname «Ип» stays.
+[[span]]
+category = "PERSON"
+trim = ["г-н", "г-жа", "господин", "госпожа"]
+
+# Complete roles come off a person's edges (#385), in their case forms.
+# Do not trim a single role-like surname ("Иво Должник").
+[[span]]
+category = "PERSON"
+trim = [
+    "индивидуальный предприниматель", "индивидуального предпринимателя",
+    "индивидуальному предпринимателю", "индивидуальным предпринимателем",
+    "индивидуальном предпринимателе",
+    "конкурсный управляющий", "конкурсного управляющего",
+    "конкурсному управляющему", "конкурсным управляющим", "конкурсном управляющем",
+    "финансовый управляющий", "финансового управляющего",
+    "финансовому управляющему", "финансовым управляющим", "финансовом управляющем",
+    "арбитражный управляющий", "арбитражного управляющего",
+    "арбитражному управляющему", "арбитражным управляющим", "арбитражном управляющем",
+    "уполномоченный по защите прав предпринимателей",
+    "уполномоченного по защите прав предпринимателей",
+    "уполномоченному по защите прав предпринимателей",
+    "уполномоченным по защите прав предпринимателей",
+    "уполномоченном по защите прав предпринимателей",
+    "уполномоченная по защите прав предпринимателей",
+    "уполномоченной по защите прав предпринимателей",
+    "уполномоченную по защите прав предпринимателей",
+    "заместитель руководителя", "заместителя руководителя",
+    "заместителю руководителя", "заместителем руководителя", "заместителе руководителя",
+    "заместитель главного бухгалтера", "заместителя главного бухгалтера",
+    "заместителю главного бухгалтера", "заместителем главного бухгалтера",
+]
+
+# Role phrases around a named organization lose only the role (#385).
+[[span]]
+category = "ORG"
+role_trim = true
+trim = [
+    "конкурсный управляющий", "конкурсного управляющего",
+    "конкурсному управляющему", "конкурсным управляющим", "конкурсном управляющем",
+    "финансовый управляющий", "финансового управляющего",
+    "финансовому управляющему", "финансовым управляющим", "финансовом управляющем",
+    "арбитражный управляющий", "арбитражного управляющего",
+    "арбитражному управляющему", "арбитражным управляющим", "арбитражном управляющем",
+    "уполномоченный по защите прав предпринимателей",
+    "уполномоченного по защите прав предпринимателей",
+    "уполномоченному по защите прав предпринимателей",
+    "уполномоченным по защите прав предпринимателей",
+    "уполномоченном по защите прав предпринимателей",
+    "уполномоченная по защите прав предпринимателей",
+    "уполномоченной по защите прав предпринимателей",
+    "уполномоченную по защите прав предпринимателей",
+]
+
+# An account's label stays outside its span: the model's "р/с
+# 40702810900000004711" is the number alone (guide rule 6, issue #486);
+# with the label's slash the span would go as no bank details.
+[[span]]
+category = "BANK"
+trim = [
+    "р/с", "р/сч", "к/с", "к/сч", "л/с", "счет", "счёт", "сч", "№",
+    "расчетный счет", "расчётный счёт", "корреспондентский счет",
+    "корреспондентский счёт",
+]
+
+# Two initials beside a surname belong to the name: the model's "Ветлин" in
+# "Ветлин Н. О." grows to the whole of it, as "Брюн" does in "Л.И. Брюн"
+# (guide rule 1, #391). Only spaces between: never across a sentence's
+# period ("Ветлин. Н. Иванов"), a comma or a line.
+[[span]]
+category = "PERSON"
+extend = [
+    '\b(?:[А-ЯЁ][\x27’])?[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)*[ \t]+[А-ЯЁ]\.[ \t]?[А-ЯЁ]\.',
+    '\b[А-ЯЁ]\.[ \t]?[А-ЯЁ]\.[ \t]+(?:[А-ЯЁ][\x27’])?[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)*',
+]
+
+# Common abbreviations (the never words below) come off an organization's
+# edges: "АЗС ООО «Бета-Ойл»" is "ООО «Бета-Ойл»" (guide rule 2, issue #481).
+[[span]]
+category = "ORG"
+trim = [
+    "тко", "тн", "ттн", "азс", "соуэ", "апс", "аупс", "аспт", "мчд", "кэп",
+    "укэп", "нэп", "пэп", "эп", "эцп", "еио", "эдо", "уц",
+]
+
+# Titles and the words for spouses: "г-жа", "муж" name no one on their own.
+[[never]]
+match = "plural"
+words = ["г-н", "г-жа", "господин", "госпожа", "гражданин", "гражданка", "муж", "жена"]
+
+# Role stems take up to three letters of ending, but never a surname's
+# (-ов, -ев, -ин and their forms): "Подрядчиков", "Супругов", "Директоров"
+# alone are surnames (issue #450).
+#
+# Contract parties, as stems with up to three letters of ending
+# ("Заказчику", "Исполнителя", "Стороны", "Заимодавца"; #385).
+# A title or a full name keeps a role-like surname.
+[[never]]
+match = "stem"
+ending = 3
+not_endings = ["ов", "ев", "ёв", "ин", "ын", "ова", "ева", "ёва", "ина", "ына", "ову", "еву", "ину"]
+words = [
+    "заказчик", "исполнител", "подрядчик", "арендатор", "арендодател",
+    "покупател", "продав", "работник", "работодател", "сторон",
+    "заимодавец", "заимодавц", "займодавец", "займодавц",
+]
+unless_named = true
+person_role = true
+
+# Parties to a dispute ("Истца", "Ответчику").
+[[never]]
+match = "stem"
+ending = 3
+not_endings = ["ов", "ев", "ёв", "ин", "ын", "ова", "ева", "ёва", "ина", "ына", "ову", "еву", "ину"]
+words = [
+    "истец", "истц", "ответчик", "заявител", "должник", "кассатор",
+    "предпринимател", "правообладател", "заемщик", "заёмщик", "кредитор",
+]
+unless_named = true
+person_role = true
+
+# Representatives and other roles ("Представителя", "Супруга", "Директору").
+[[never]]
+match = "stem"
+ending = 3
+not_endings = ["ов", "ев", "ёв", "ин", "ын", "ова", "ева", "ёва", "ина", "ына", "ову", "еву", "ину"]
+words = [
+    "представител", "доверител", "поверенн", "супруг", "адвокат", "юрист", "директор",
+    "эксперт", "секретар", "свидетел", "собственник", "владел", "поставщик",
+    "руководител", "бухгалтер", "уполномоченн", "управляющ",
+]
+unless_named = true
+person_role = true
+
+# A child label is a role, not a name (#385).
+[[never]]
+match = "stem"
+ending = 3
+words = ["ребен", "ребён"]
+not_endings = ["ов", "ев", "ёв", "ин", "ын", "ова", "ева", "ёва", "ина", "ына", "ову", "еву", "ину"]
+unless_named = true
+person_role = true
+
+# Inflected role modifiers count only inside multiword role phrases.
+[[never]]
+match = "stem"
+ending = 3
+words = ["несовершеннолетн", "конкурсн", "финансов", "арбитражн", "заместител"]
+not_endings = ["ов", "ев", "ёв", "ин", "ын", "ова", "ева", "ёва", "ина", "ына", "ову", "еву", "ину"]
+unless_named = true
+phrase_only = true
+
+# Noun forms whose irregular endings are clearer listed whole (#385).
+# "Лица" in a procedural sentence and "Собрание кредиторов" name no one.
+[[never]]
+match = "whole"
+words = [
+    "лицо", "лица", "лицу", "лицом", "лице", "лиц", "лицам", "лицами", "лицах",
+    "собрание", "собрания", "собранию", "собранием", "собрании",
+]
+unless_named = true
+person_role = true
+
+# Complete office and status phrases only: no wildcard after a role may
+# swallow a name (#385). Named officers such as "Уполномоченный Брюн" stay.
+[[never]]
+match = "pattern"
+patterns = [
+    '(?i)^[\s\p{P}]*(?:собрани(?:е|я|ю|ем|и)[\p{Zs}\t]+кредиторов|должник[\p{Zs}\t]+холост|уполномоченн(?:ый|ого|ому|ым|ом|ая|ой|ую)[\p{Zs}\t]+по[\p{Zs}\t]+защите[\p{Zs}\t]+прав[\p{Zs}\t]+предпринимателей)[\s\p{P}]*$',
+]
+anywhere_in = ["PERSON"]
+unless_titled = true
+
+# The same role-only phrases labelled as organizations (#385).
+[[never]]
+match = "pattern"
+patterns = [
+    '(?i)^[\s\p{P}]*(?:собрани(?:е|я|ю|ем|и)[\p{Zs}\t]+кредиторов|должник[\p{Zs}\t]+холост|уполномоченн(?:ый|ого|ому|ым|ом|ая|ой|ую)[\p{Zs}\t]+по[\p{Zs}\t]+защите[\p{Zs}\t]+прав[\p{Zs}\t]+предпринимателей)[\s\p{P}]*$',
+]
+anywhere_in = ["ORG"]
+
+# Defined terms: "Общество", "Компания", "Организация" stand for a party
+# named elsewhere (issue #390), and so does "Фонд" ("бюджет Фонда", #378).
+# Their case forms are listed whole, so surnames such as "Компаниец" stay.
+[[never]]
+match = "whole"
+words = [
+    "общество", "общества", "обществу", "обществом", "обществе", "компания",
+    "компании", "компанию", "компанией", "организация", "организации",
+    "организацию", "организацией", "фонд", "фонда", "фонду", "фондом",
+    "фонде",
+]
+
+# Generic nouns a document defines as a term after «далее –» or «именуемое
+# в дальнейшем»: «(далее – Положение)», «(далее – Учреждение)», «Займодавец»,
+# «Заёмщик». Once the document defines one, every mention of it, in any case,
+# is a defined term and no organization (guide rule 2, issue #390). Only
+# where the document defines it: elsewhere a company may share the word, and
+# a term with any coined or real word («Кедровое») defines none. As stems
+# with up to three letters of ending, including genitive plurals
+# («Кредиторов»). Other surname endings remain excluded. This filter
+# applies only to ORG; the separate PERSON surname guards are unchanged.
+[[defined]]
+match = "stem"
+ending = 3
+not_endings = ["ёв", "ин", "ын", "ова", "ева", "ёва", "ина", "ына", "ову", "еву", "ину"]
+words = [
+    "положени", "учреждени", "предприяти", "соглашени", "договор", "контракт",
+    "приложени", "регламент", "устав", "программ", "объект", "имуществ",
+    "территори", "кредитор", "должник", "заемщик", "заёмщик", "займодав",
+    "залогодател", "залогодержател", "принципал", "агент", "учредител",
+    "участник", "акционер", "страховщик", "страхователь", "перевозчик",
+    "грузоотправител", "грузополучател", "наймодател", "нанимател",
+    "лицензиат", "лицензиар", "цедент", "цессионари", "правообладател",
+    "пользовател", "оператор", "организатор", "корпораци", "фирм",
+]
+
+# Category words and identifier labels: "СНИЛС", "ИНН", "Телефон", "Адрес"
+# name no one (issue #379). Case forms are listed whole, so "Банков" and
+# "Адресат" stay.
+[[never]]
+match = "whole"
+words = [
+    "снилс", "инн", "огрн", "огрнип", "кпп", "бик", "телефон", "телефона",
+    "телефону", "телефоном", "телефоне", "адрес", "адреса", "адресу",
+    "адресом", "адресе", "паспорт", "паспорта", "паспорту", "паспортом",
+    "паспорте", "банк", "банка", "банку", "банком", "банке",
+]
+
+# Common abbreviations name no one (guide rule 8, issue #481): waste and
+# waybills ("вывоз ТКО", "по ТН № 15", "ТТН"), a petrol station ("на
+# АЗС"), fire systems ("СОУЭ", "АПС") and e-signature and e-document terms
+# ("МЧД", "КЭП", "ЭП", "ЕИО", "ЭДО"). They do not decline, so they are
+# listed whole. A company that shares one keeps it by its other words or
+# legal form ("АО «ТТН-Логистик»", "ООО «АЗС»").
+[[never]]
+match = "whole"
+words = [
+    "тко", "тн", "ттн", "азс", "соуэ", "апс", "аупс", "аспт", "мчд", "кэп",
+    "укэп", "нэп", "пэп", "эп", "эцп", "еио", "эдо", "уц",
+]
+
+# The Internet is no organization, in any form, nor is the statutory
+# phrase around it: "сети «Интернет»", "информационно-телекоммуникационной
+# сети Интернет" (guide rule 2, issue #488). Listed whole and dropped only
+# when a span has no other word, so "Интернет Решения" and "Сети «Ромашка»"
+# stay.
+[[never]]
+match = "whole"
+words = [
+    "интернет", "интернета", "интернету", "интернетом", "интернете", "сеть",
+    "сети", "сетью", "сетей", "информационно-телекоммуникационная",
+    "информационно-телекоммуникационной", "информационно-телекоммуникационную",
+    "всемирная", "всемирной", "всемирную", "глобальная", "глобальной",
+    "глобальную",
+]
+
+# Software, messengers and legal databases are products, not the company
+# that makes them: "переписка в Ватсапе", "система КонсультантПлюс" (guide
+# rule 2, issue #488). Their case forms take up to three letters. The
+# company keeps its name by its legal form ("ООО «КонсультантПлюс»").
+[[never]]
+match = "stem"
+ending = 3
+words = ["ватсап", "вотсап", "вацап", "телеграм", "вайбер", "консультантплюс"]
+
+# The same products in Latin letters.
+[[never]]
+match = "whole"
+words = ["whatsapp", "telegram", "viber"]
+
+# Words that make a job title of a role: "Независимый эксперт", "Главный
+# бухгалтер" name no one (guide rule 8). Alone they may be names.
+[[never]]
+match = "whole"
+words = [
+    "независимый", "независимого", "независимому", "главный", "главного",
+    "главному", "старший", "старшего", "старшему", "генеральный",
+    "генерального", "генеральному", "ведущий", "ведущего", "ведущему",
+    "независимым", "независимом", "независимая", "независимой", "независимую",
+    "главным", "главном", "главная", "главной", "главную",
+    "старшим", "старшем", "старшая", "старшей", "старшую",
+    "генеральным", "генеральном", "генеральная", "генеральной", "генеральную",
+    "ведущим", "ведущем", "ведущая", "ведущей", "ведущую",
+    "индивидуальный", "индивидуального", "индивидуальному",
+    "индивидуальным", "индивидуальном", "индивидуальная", "индивидуальной",
+    "индивидуальную",
+]
+unless_named = true
+phrase_only = true
+
+# Codes of law, short court names and the country: "ГК РФ", "ГПК РФ", "ВС
+# РФ", "Российской Федерации" in "Именем Российской Федерации" or after a
+# court's name are references or places, not organizations (issues #378,
+# #478). Listed whole and dropped only when a span has no other word, so
+# "Российский союз автостраховщиков", "Сбербанк России" and "Банк «Россия»"
+# stay.
+[[never]]
+match = "whole"
+words = [
+    "гк", "рф", "гпк", "апк", "ук", "коап", "нк", "тк", "упк", "жк", "ск",
+    "зк", "бк", "кас", "лк", "грк", "фз", "фкз", "вс", "ас", "россии", "россию", "россией",
+    "российская", "российской", "российскую", "федерация", "федерации",
+    "федерацию", "федерацией", "именем", "коллегия", "коллегии", "коллегию",
+    "коллегией",
+]
+
+# "Субъект" and its forms: "субъектов Российской Федерации" is no body.
+[[never]]
+match = "stem"
+ending = 3
+words = ["субъект"]
+
+# Courts and public bodies are never marked (the fixture guide's rule 8):
+# an organization or person span with one of these stems anywhere is
+# dropped ("Районный суд", "Верховный Суд Российской Федерации",
+# "Министерства юстиции", "Судебная коллегия", "Управлением Росреестра",
+# "отдела судебных приставов", "Правительства … области", "Президиума",
+# "Регистрационной палатой"; issue #378), unless it has a legal form;
+# words in quotes are a name. A state or municipal institution is a public
+# body ("Федерального казенного учреждения", "государственного бюджетного
+# учреждения"). In a person's span a stem counts only with the body
+# words' own case endings ("Министерство", "Правительству", "судов
+# общей юрисдикции"), so a surname with it stays ("Судине", "Судник",
+# "Приставко", and "Судов" capitalized), and so does one after a title
+# ("г-н Суд") or with initials ("Суд Н. О.", "СУД Н. О.").
+[[never]]
+match = "stem"
+ending = 3
+words = [
+    "суд", "судебн", "министерств", "прокуратур", "департамент", "администраци",
+    "инспекци", "правительств", "управлени", "отдел", "отделени", "комитет",
+    "пристав", "полици", "пленум", "президиум", "палат", "федеральн",
+    "государственн", "муниципальн", "казенн", "казённ", "бюджетн", "минтруд",
+    "минфин", "минюст", "минздрав", "минпромторг", "минтранс", "минсельхоз",
+    "минспорт", "минстро", "росреестр", "росгварди", "роспотребнадзор",
+    "ростехнадзор", "роскомнадзор", "росприроднадзор", "росимуществ",
+    "росстат", "роструд",
+]
+anywhere_in = ["ORG", "PERSON"]
+person_endings = [
+    "", "а", "я", "у", "ю", "о", "е", "и", "ы", "й", "ом", "ем", "ой", "ою",
+    "ей", "ов", "ам", "ям", "ах", "ях", "ами", "ями", "ый", "ий", "ая", "яя",
+    "ое", "ее", "ые", "ие", "ого", "его", "ому", "ему", "ую", "юю", "ым", "им",
+    "ых", "их", "ыми", "ими",
+]
+surname_endings = ["ов"]
+unless_titled = true
+
+# The same bodies' abbreviations and indeclinable names, matched whole:
+# "ГУ МВД России по …", "МИФНС России № 9", "УФССП", "14 ААС", "ГКУ
+# города Ольховска", "ГБ МСЭ по … области", the pension and social funds'
+# offices ("УПФР", "ОСФР"), the Treasury's ("УФК") and the central bank
+# ("ЦБ РФ") (issue #378).
+[[never]]
+match = "whole"
+words = [
+    "фнс", "ифнс", "мифнс", "уфнс", "мвд", "умвд", "омвд", "овд", "гибдд",
+    "мчс", "фссп", "уфссп", "гуфссп", "осп", "росп", "госп", "загс", "гиаз",
+    "пфр", "упфр", "опфр", "гупфр", "сфр", "осфр", "фсс", "уфк", "цб",
+    "фас", "фсин", "уфсин", "фсб", "фмс", "уфмс", "гку", "гбу", "гау", "фгбу",
+    "фгку", "фгау", "фку", "мку", "мбу", "гбоу", "фгбоу", "мбоу", "гбуз",
+    "мсэ", "аас", "депнедра", "минэнерго", "минэкономразвития", "минобороны",
+    "минприроды", "минцифры", "минкультуры", "минпросвещения", "минобрнауки",
+    "мэрия", "мэрии", "мэрию", "мэрией",
+]
+anywhere_in = ["ORG", "PERSON"]
+unless_titled = true
+
+# A bare "ГУ" (a state institution) before a body's name: "ГУ - Управление
+# …", "ГУ «…»" (issue #378). An organization only: "Гу" is a surname.
+[[never]]
+match = "whole"
+words = ["гу"]
+anywhere_in = ["ORG"]
+
+# Public bodies by their phrases, as an organization or a person (issue
+# #378): the pension and social funds ("Пенсионный фонд Российской
+# Федерации", "Фонда пенсионного и социального страхования", "Фонда
+# социального страхования", "бюджета Фонда"), the President, the central
+# bank ("Банк России", "Центрального банка Российской Федерации"), the
+# armed forces, the tax authorities, the former Supreme Arbitration Court
+# ("Президиума ВАС РФ") and an arbitration court's short name before its
+# region ("АС Северной области", "АС Ольховска и Северной обл"). A
+# charity's "Благотворительный фонд «…»" and "ООО «Фонд Север»" stay.
+[[never]]
+match = "pattern"
+patterns = [
+    '(?i)\b(?:пенсионн|социальн)\p{Alphabetic}*[\p{Zs}\t]+фонд',
+    '(?i)\bфонд\p{Alphabetic}{0,2}[\p{Zs}\t]+(?:пенсионн|социальн|обязательн)',
+    '(?i)\bбюджет\p{Alphabetic}{0,2}[\p{Zs}\t]+фонд',
+    '(?i)\bпрезидент\p{Alphabetic}{0,3}[\p{Zs}\t]+(?:российской[\p{Zs}\t]+федерации|рф|россии)\b',
+    '(?i)^[\s\p{P}]*(?:центральн\p{Alphabetic}*[\p{Zs}\t]+)?банк\p{Alphabetic}{0,3}[\p{Zs}\t]+(?:россии|рф|российской[\p{Zs}\t]+федерации)[\s\p{P}]*$',
+    '(?i)\bвооруж[её]нн\p{Alphabetic}*[\p{Zs}\t]+сил',
+    '(?i)\bналогов\p{Alphabetic}{0,3}[\p{Zs}\t]+орган',
+    '\bВАС\b',
+    '^[\s\p{P}]*(?:\d+[\p{Zs}\t]*)?(?:АС|ФАС|ААС)[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}-]*(?:ой|ого|ей|ы|и|а|я)\b',
+]
+anywhere_in = ["ORG", "PERSON"]
+
+# Never public bodies, whoever owns them: a span that names a university
+# or college itself, after its abbreviations and adjectives, a state one
+# too ("ФГБОУ ВО «Северный государственный университет»", "ГБПОУ
+# «Ольховский колледж»"; #484), and one that opens with a non-state or
+# charitable fund ("Негосударственный пенсионный фонд «Кедр»", "НПФ
+# «Кедр»"). "ГБУ «Университетская больница»" and "Министерство науки и
+# университетов" name no university, and go.
+[[private]]
+patterns = [
+    '^[\s\p{P}]*(?:\p{Uppercase}{2,7}[\p{Zs}\t]+){0,2}[«"]?(?i:(?:\p{Alphabetic}+(?:ый|ий|ой|ая|яя|ое|ее|ого|его|ому|ему|ым|им|ую|юю|ых|их)[\p{Zs}\t-]+){0,4}(?:университет|колледж)(?:а|у|ом|ем|е|ы|и|ов|ей|ам|ами|ах)?)(?:[^\p{Alphabetic}]|$)',
+    '^[\s\p{P}]*(?:АО[\p{Zs}\t]+)?[«"]?(?:(?i:негосударственн|благотворительн)|НПФ\b)',
+]
+
+# A public-law company is a public body (guide rule 8, the maintainer's
+# decision on #484, item 4): "ППК «Роскадастр»", "публично-правовая
+# компания «Фонд развития территорий»", "Роскадастра" alone, as an
+# organization or a person. Words in quotes are its name, so the form
+# outside them decides.
+[[never]]
+match = "whole"
+words = ["ппк"]
+anywhere_in = ["ORG", "PERSON"]
+
+# The model's person in a public-law company's quotes is its name, no
+# one's: "Фонд развития территорий" in "ППК «Фонд развития территорий»"
+# (#484, item 4).
+[[shape]]
+category = "PERSON"
+forbid_quotes = ["«»"]
+quotes_after_words = ["ППК"]
+
+# The same company's form and Роскадастр by their stems
+# ("публично-правовой", "Роскадастру").
+[[never]]
+match = "stem"
+ending = 3
+words = ["публично-правов", "роскадастр"]
+anywhere_in = ["ORG", "PERSON"]
+
+# Codes and laws by their full names: "Гражданского кодекса Российской
+# Федерации", "Федерального закона", "Конституции Российской Федерации",
+# "законодательством Российской Федерации" (guide rule 8, issue #378), as
+# an organization or a person.
+[[never]]
+match = "stem"
+ending = 3
+words = ["кодекс", "закон", "законодательств", "конституци"]
+anywhere_in = ["ORG", "PERSON"]
+person_endings = [
+    "", "а", "я", "у", "ю", "о", "е", "и", "ы", "й", "ом", "ем", "ой", "ою",
+    "ей", "ов", "ам", "ям", "ах", "ях", "ами", "ями", "ый", "ий", "ая", "яя",
+    "ое", "ее", "ые", "ие", "ого", "его", "ому", "ему", "ую", "юю", "ым", "им",
+    "ых", "их", "ыми", "ими",
+]
+surname_endings = ["ов"]
+unless_titled = true
+
+# A region, district, city or settlement is a place, not an organization,
+# alone or as a public body's tail: "Северной области", "Ольховскому
+# краю", "Кедровской Республики", "Ольховскому району", "городу
+# Ольховску", "ПГТ Ольховка" (guide rules 2 and 3, issue #478). A company
+# keeps a place in its name by its legal form ("ООО «Северная область
+# Строй»"), and so does any name in quotes ("Банк «Город»"): public-body
+# words count outside quotes only.
+[[never]]
+match = "stem"
+ending = 3
+words = ["област", "республик", "район", "округ", "поселк", "посёлк", "станиц"]
+anywhere_in = ["ORG"]
+
+# The same places' designators that are matched whole: "края" and "города"
+# are common words in other forms; "обл" is "области" cut short.
+[[never]]
+match = "whole"
+words = [
+    "край", "края", "краю", "краем", "крае", "город", "города", "городу",
+    "городом", "городе", "г", "пгт", "поселок", "посёлок", "обл",
+]
+anywhere_in = ["ORG"]
+
+# A law's number is a legal reference, never an organization: "ФЗ № 127-ФЗ",
+# "Федерального закона … № 418-ФЗ" (guide rule 8, issue #378).
+[[shape]]
+category = "ORG"
+forbid = ['\d[\p{Zs}\t]*-[\p{Zs}\t]*ФК?З\b']
+
+# Russian legal forms mark a manual selection as an organization
+# ("ООО «Ромашка»"). Matched as written: ASCII case folding leaves Cyrillic
+# as is.
+[[shape]]
+category = "ORG"
+guess_words = ["ООО", "ОАО", "ЗАО", "ПАО", "АО", "НКО", "ИП"]
+
+# A date mask in a blank or depersonalised form is no date, organization or
+# person: "ДД.ММ.ГГГГ", "ДД.ММ.ГГ", "ХХ.ХХ.ХХ", "__.__.____", alone or before
+# a number sign ("ХХ.ХХ.ХХ №") or a word the model took with it
+# ("ДД.ММ.ГГГГ уроженца"). Two letters at least in a group, so initials
+# ("М.Г.") stay (guide rules 4 and 8, issue #487).
+[[shape]]
+category = "ORG"
+forbid = ['(?i)^\s*[«"(]?[дмгхx_]{2,4}(?:[./][дмгхx_]{2,4}){1,2}(?:г\.?)?(?:[^\p{Alphabetic}\p{N}_]|$)']
+
+# The same mask as a person.
+[[shape]]
+category = "PERSON"
+forbid = ['(?i)^\s*[«"(]?[дмгхx_]{2,4}(?:[./][дмгхx_]{2,4}){1,2}(?:г\.?)?(?:[^\p{Alphabetic}\p{N}_]|$)']
+
+# The same mask as a date.
+[[shape]]
+category = "DATE"
+forbid = ['(?i)^\s*[«"(]?[дмгхx_]{2,4}(?:[./][дмгхx_]{2,4}){1,2}(?:г\.?)?(?:[^\p{Alphabetic}\p{N}_]|$)']
+
+# A placeholder for a party in a depersonalised act is no one: «ФИО1»,
+# «ФИО 2», «ИП ФИО1», «ФИО1 и ФИО2», «ФИО3 – ФИО6», «Потерпевший №1»,
+# with a role before it in the span («конкурсного управляющего ФИО1»),
+# whatever the model guessed (guide rule 8, the maintainer's decision on
+# #484, item 1). Real initials after one go with the span here and come
+# back alone as PERSON by the span pattern below: «ИП ФИО3 А-Х.О.» is
+# «А-Х.О.». A real name beside one keeps the span.
+[[shape]]
+category = "ORG"
+forbid = ['^[\s\p{P}]*(?:\p{Ll}[\p{Alphabetic}-]*[\p{Zs}\t]+){0,3}(?:ИП[\p{Zs}\t]+)?(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3})(?:[\p{Zs}\t]*(?:,|и|[–—-])[\p{Zs}\t]*(?:ИП[\p{Zs}\t]+)?(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3}))*(?:[\p{Zs}\t]+\p{Uppercase}(?:-\p{Uppercase})?\.(?:[\p{Zs}\t]?\p{Uppercase}(?:-\p{Uppercase})?\.)?)?[\s\p{P}]*$']
+
+# The same placeholder as a person.
+[[shape]]
+category = "PERSON"
+forbid = ['^[\s\p{P}]*(?:\p{Ll}[\p{Alphabetic}-]*[\p{Zs}\t]+){0,3}(?:ИП[\p{Zs}\t]+)?(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3})(?:[\p{Zs}\t]*(?:,|и|[–—-])[\p{Zs}\t]*(?:ИП[\p{Zs}\t]+)?(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3}))*(?:[\p{Zs}\t]+\p{Uppercase}(?:-\p{Uppercase})?\.(?:[\p{Zs}\t]?\p{Uppercase}(?:-\p{Uppercase})?\.)?)?[\s\p{P}]*$']
+
+# Real initials after a placeholder are a name part, PERSON alone:
+# «А-Х.О.» in «ИП ФИО3 А-Х.О.», «В. С.» in «ФИО2 В. С.» and in
+# «Потерпевший №1 В. С.» (guide rules 1 and 8, the maintainer's decision
+# on #484, item 1).
+[[span]]
+category = "PERSON"
+pattern = '(?P<lead>\b(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3})[\p{Zs}\t]+)\p{Uppercase}(?:-\p{Uppercase})?\.(?:[\p{Zs}\t]?\p{Uppercase}(?:-\p{Uppercase})?\.)?(?P<tail>[^\p{Alphabetic}]|$)'
+
+# An individual entrepreneur is not an organization: the name after «ИП»
+# or «индивидуальный предприниматель» (any case form) is PERSON, and the
+# words for the status stay outside the span (guide rule 1, the
+# maintainer's decision on #484 item 5, issue #562). A span of exactly the
+# status and a name, surname with initials or a full name in any order and
+# case form, goes as an organization; the span pattern below gives the
+# name back as PERSON. A trading name in quotes after the name («ИП …
+# магазин «Кедрач»») is no part of the span and stays an organization
+# (item 8). A placeholder («ИП ФИО1») is dropped above.
+[[shape]]
+category = "ORG"
+forbid = ['^[\s\p{P}]*(?:\p{Ll}[\p{Alphabetic}-]*[\p{Zs}\t]+){0,3}(?:ИП|(?i:индивидуальн\p{Alphabetic}*[\p{Zs}\t]+предпринимател\p{Alphabetic}*))[\p{Zs}\t]+(?:(?:\p{Uppercase}\p{Ll}+(?:-\p{Uppercase}\p{Ll}+)*|\p{Lu}{2,}(?:-\p{Lu}{2,})*)[\p{Zs}\t]+\p{Uppercase}(?:-\p{Uppercase})?\.(?:[\p{Zs}\t]?\p{Uppercase}(?:-\p{Uppercase})?\.)?|\p{Uppercase}(?:-\p{Uppercase})?\.(?:[\p{Zs}\t]?\p{Uppercase}(?:-\p{Uppercase})?\.)?[\p{Zs}\t]+(?:\p{Uppercase}\p{Ll}+(?:-\p{Uppercase}\p{Ll}+)*|\p{Lu}{2,}(?:-\p{Lu}{2,})*)|(?:\p{Uppercase}\p{Ll}+(?:-\p{Uppercase}\p{Ll}+)*|\p{Lu}{2,}(?:-\p{Lu}{2,})*)[\p{Zs}\t]+(?:\p{Uppercase}\p{Ll}+(?:-\p{Uppercase}\p{Ll}+)*|\p{Lu}{2,}(?:-\p{Lu}{2,})*)[\p{Zs}\t]+\p{Uppercase}[\p{Ll}\p{Lu}]*(?i:(?:ич|ыч)(?:а|у|ем|ом|е)?|(?:вн|чн)(?:а|ы|е|у|ой)|оглы|кызы)|(?:\p{Uppercase}\p{Ll}+(?:-\p{Uppercase}\p{Ll}+)*|\p{Lu}{2,}(?:-\p{Lu}{2,})*)[\p{Zs}\t]+\p{Uppercase}[\p{Ll}\p{Lu}]*(?i:(?:ич|ыч)(?:а|у|ем|ом|е)?|(?:вн|чн)(?:а|ы|е|у|ой)|оглы|кызы)[\p{Zs}\t]+(?:\p{Uppercase}\p{Ll}+(?:-\p{Uppercase}\p{Ll}+)*|\p{Lu}{2,}(?:-\p{Lu}{2,})*))[\s\p{P}]*$']
+
+# The name after the status of an individual entrepreneur is PERSON alone
+# («Ветлин Н. О.» in «ИП Ветлин Н. О.», «Брюн Лидия Игоревна» in
+# «индивидуальный предприниматель Брюн Лидия Игоревна», «Ветлину Н.О.» in
+# «ИП Ветлину Н.О.»), whether the model took the status with the name, as
+# an organization (with or without the status), or not at all (issue #562).
+# Surname and initials, initials and surname, surname, name and patronymic,
+# or name, patronymic and surname, in any case form («Моховым Ильёй
+# Ильичом»), each word in title case or capitals («МОХОВ Лев Романович»);
+# a missed real name leaks, an extra mark costs one untick. An ORG exactly
+# on the name yields to this PERSON.
+[[span]]
+category = "PERSON"
+pattern = '(?P<lead>{lead})(?:{name})(?P<tail>[^\p{Alphabetic}]|$)'
+parts.lead = '(?:ИП|(?i:индивидуальн\p{Alphabetic}*[\p{Zs}\t]+предпринимател\p{Alphabetic}*))[\p{Zs}\t]+'
+parts.name = '(?:\p{Uppercase}\p{Ll}+(?:-\p{Uppercase}\p{Ll}+)*|\p{Lu}{2,}(?:-\p{Lu}{2,})*)[\p{Zs}\t]+\p{Uppercase}(?:-\p{Uppercase})?\.(?:[\p{Zs}\t]?\p{Uppercase}(?:-\p{Uppercase})?\.)?|\p{Uppercase}(?:-\p{Uppercase})?\.(?:[\p{Zs}\t]?\p{Uppercase}(?:-\p{Uppercase})?\.)?[\p{Zs}\t]+(?:\p{Uppercase}\p{Ll}+(?:-\p{Uppercase}\p{Ll}+)*|\p{Lu}{2,}(?:-\p{Lu}{2,})*)|(?:\p{Uppercase}\p{Ll}+(?:-\p{Uppercase}\p{Ll}+)*|\p{Lu}{2,}(?:-\p{Lu}{2,})*)[\p{Zs}\t]+(?:\p{Uppercase}\p{Ll}+(?:-\p{Uppercase}\p{Ll}+)*|\p{Lu}{2,}(?:-\p{Lu}{2,})*)[\p{Zs}\t]+\p{Uppercase}[\p{Ll}\p{Lu}]*(?i:(?:ич|ыч)(?:а|у|ем|ом|е)?|(?:вн|чн)(?:а|ы|е|у|ой)|оглы|кызы)|(?:\p{Uppercase}\p{Ll}+(?:-\p{Uppercase}\p{Ll}+)*|\p{Lu}{2,}(?:-\p{Lu}{2,})*)[\p{Zs}\t]+\p{Uppercase}[\p{Ll}\p{Lu}]*(?i:(?:ич|ыч)(?:а|у|ем|ом|е)?|(?:вн|чн)(?:а|ы|е|у|ой)|оглы|кызы)[\p{Zs}\t]+(?:\p{Uppercase}\p{Ll}+(?:-\p{Uppercase}\p{Ll}+)*|\p{Lu}{2,}(?:-\p{Lu}{2,})*)'
+absorbs.ORG = '(?P<span>{name})$'
+
+# The status of an individual entrepreneur stays outside a person's span:
+# the model's «ИП Мохов Л. Р.» as a person is «Мохов Л. Р.», and so is
+# «индивидуального предпринимателя Мохова Л. Р.» (issue #562), with up to
+# three lowercase words before it («об индивидуальном предпринимателе …»).
+# Only the uppercase abbreviation is status: «Ип Ман» keeps its surname.
+[[span]]
+category = "PERSON"
+trim_start = ['(?:\p{Ll}[\p{Alphabetic}-]*[\p{Zs}\t]+){0,3}(?:ИП|(?i:индивидуальн(?:ый|ого|ому|ым|ом)[\p{Zs}\t]+предпринимател(?:ь|я|ю|ем|е)))[\p{Zs}\t]+']
+
+# The same placeholder as an identity document: its digit is no number.
+[[shape]]
+category = "IDENTITY"
+forbid = ['^[\s\p{P}]*(?:\p{Ll}[\p{Alphabetic}-]*[\p{Zs}\t]+){0,3}(?:ИП[\p{Zs}\t]+)?(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3})(?:[\p{Zs}\t]*(?:,|и|[–—-])[\p{Zs}\t]*(?:ИП[\p{Zs}\t]+)?(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3}))*(?:[\p{Zs}\t]+\p{Uppercase}(?:-\p{Uppercase})?\.(?:[\p{Zs}\t]?\p{Uppercase}(?:-\p{Uppercase})?\.)?)?[\s\p{P}]*$']
+
+# A cadastral number is no tax number, phone or account (the maintainer's
+# decision on #484, item 2): a model span that starts with one, is its
+# first three or last two parts, goes, and the IDENTITY span below takes
+# the number. Nor is a placeholder ("ФИО1") one (item 1).
+[[shape]]
+category = "TAX"
+forbid = [
+    '^\s*(?:\d{2}:)?\d{2}:\d{6,7}(?::\d|\s*$)|^\s*\d{6,7}:\d{1,7}\s*$',
+    '^[\s\p{P}]*(?:\p{Ll}[\p{Alphabetic}-]*[\p{Zs}\t]+){0,3}(?:ИП[\p{Zs}\t]+)?(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3})(?:[\p{Zs}\t]*(?:,|и|[–—-])[\p{Zs}\t]*(?:ИП[\p{Zs}\t]+)?(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3}))*(?:[\p{Zs}\t]+\p{Uppercase}(?:-\p{Uppercase})?\.(?:[\p{Zs}\t]?\p{Uppercase}(?:-\p{Uppercase})?\.)?)?[\s\p{P}]*$',
+]
+
+# The same as a phone.
+[[shape]]
+category = "PHONE"
+forbid = [
+    '^\s*(?:\d{2}:)?\d{2}:\d{6,7}(?::\d|\s*$)|^\s*\d{6,7}:\d{1,7}\s*$',
+    '^[\s\p{P}]*(?:\p{Ll}[\p{Alphabetic}-]*[\p{Zs}\t]+){0,3}(?:ИП[\p{Zs}\t]+)?(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3})(?:[\p{Zs}\t]*(?:,|и|[–—-])[\p{Zs}\t]*(?:ИП[\p{Zs}\t]+)?(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3}))*(?:[\p{Zs}\t]+\p{Uppercase}(?:-\p{Uppercase})?\.(?:[\p{Zs}\t]?\p{Uppercase}(?:-\p{Uppercase})?\.)?)?[\s\p{P}]*$',
+]
+
+# The same as bank details.
+[[shape]]
+category = "BANK"
+forbid = [
+    '^\s*(?:\d{2}:)?\d{2}:\d{6,7}(?::\d|\s*$)|^\s*\d{6,7}:\d{1,7}\s*$',
+    '^[\s\p{P}]*(?:\p{Ll}[\p{Alphabetic}-]*[\p{Zs}\t]+){0,3}(?:ИП[\p{Zs}\t]+)?(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3})(?:[\p{Zs}\t]*(?:,|и|[–—-])[\p{Zs}\t]*(?:ИП[\p{Zs}\t]+)?(?:ФИО[\p{Zs}\t]?\d{1,3}|(?:[Пп]отерпевш|[Сс]видетел|[Оо]бвиняем|[Пп]одсудим|[Оо]сужд[её]нн)\p{Alphabetic}*[\p{Zs}\t]*№[\p{Zs}\t]*\d{1,3}))*(?:[\p{Zs}\t]+\p{Uppercase}(?:-\p{Uppercase})?\.(?:[\p{Zs}\t]?\p{Uppercase}(?:-\p{Uppercase})?\.)?)?[\s\p{P}]*$',
+]
+
+# A product's name in quotes after the word for it is no organization: "ПО
+# «Контур»", "АСУ «Экспресс»", "программы «Сетка»", "мессенджера «Ватсап»",
+# "Система «Гарант»" at a sentence's start (guide rule 2, issue #488), and
+# neither is the whole phrase. A company keeps it by its legal form ("ООО
+# «Контур»"). An app's name ("приложение «…»") waits for the guide (#484).
+[[shape]]
+category = "ORG"
+forbid = [
+    '^\s*(?:ПО|АСУ)\s*(?:«[^«»]*»|"[^"]*")\s*$',
+    '(?i)^\s*(?:программ|мессенджер|систем)\p{Alphabetic}{0,3}\s*(?:«[^«»]*»|"[^"]*")\s*$',
+]
+forbid_quotes = ["«»", '""']
+quotes_after = ["программ", "мессенджер", "систем"]
+quotes_after_words = ["ПО", "АСУ", "Программа", "Мессенджер", "Система"]
+
+# Dates with a Russian month name: "12 марта 2026 г.", "«12» марта 2026".
+[[shape]]
+category = "DATE"
+guess = [
+    '(?i)\s*[«"]?(?:\d{1,2}|(?:\\?_)+)[»"]?\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(?:\d{4}|(?:\\?_)+)(?:\s*(?:г\.?|года))?\s*',
+]
+
+# Case numbers after "номер дела" or "дело №" (ADR 0092): "**Номер дела:**
+# 2-1842/2026", "**Дело №** 1234", "дело № А40-123456/2026". The value is the
+# whole identifier and needs four digits: the review proposes a wording
+# everywhere it appears, and a short one would mark "статья 12" too. A date
+# is not one.
+[[context]]
+category = "CASE"
+labels = ["номер дела"]
+between = '[\p{Zs}\t:*_№#.]{1,8}'
+value = '(?:\p{Alphabetic}+[-/:.]?)*\d[\p{Alphabetic}\p{N}]*(?:[-/:.][\p{Alphabetic}\p{N}]+)*'
+min_digits = 4
+unless_guessed = ["DATE"]
+
+# "дело №", "дела №", "делу №": the number sign makes the word a label. A
+# court case only: an archive, personnel or registry file ("архивное дело
+# 58239", "личное дело") is not one (issue #451).
+[[context]]
+category = "CASE"
+labels = ["дело", "дела", "делу"]
+between = '[\p{Zs}\t*_]{0,3}№[\p{Zs}\t:*_.]{0,6}'
+value = '(?:\p{Alphabetic}+[-/:.]?)*\d[\p{Alphabetic}\p{N}]*(?:[-/:.][\p{Alphabetic}\p{N}]+)*'
+min_digits = 4
+unless_guessed = ["DATE"]
+unless_after = [
+    "архивное", "архивного", "архивному", "архивным", "личное", "личного",
+    "личному", "кадровое", "кадрового", "учётное", "учетное", "номенклатурное",
+]
+
+# "дело", "дела", "делу" without "№" are also common words: only a number
+# with a separator, or of five digits or more, follows them as a case number
+# ("дело А40-987654/2026", "по делу 2-1842/2026"), never a date.
+[[context]]
+category = "CASE"
+labels = ["дело", "дела", "делу"]
+between = '[\p{Zs}\t:#]{1,4}'
+value = '(?:\p{Alphabetic}+[-/:.]?)*\d[\p{Alphabetic}\p{N}]*(?:[-/:.][\p{Alphabetic}\p{N}]+)+|\d{5,}'
+min_digits = 4
+unless_guessed = ["DATE"]
+unless_after = [
+    "архивное", "архивного", "архивному", "архивным", "личное", "личного",
+    "личному", "кадровое", "кадрового", "учётное", "учетное", "номенклатурное",
+]
+
+# Russian identifiers after their label (ADR 0092), whatever their checksum:
+# the guide marks invalid and damaged ones too. The structured rules propose
+# only valid ones; these give the label's category over the model's guess.
+# A table column headed by the label takes its cells' values too.
+#
+# ИНН: ten or twelve digits; OCR may read a digit as O, О, I, l or І.
+[[context]]
+category = "TAX"
+labels = ["инн"]
+between = '[\p{Zs}\t:*_№#.]{1,8}'
+value = '[0-9OОoIlІ]{10}(?:[0-9OОoIlІ]{2})?'
+min_digits = 8
+
+# СНИЛС: "123-456-789 00" or eleven digits.
+[[context]]
+category = "IDENTITY"
+labels = ["снилс"]
+between = '[\p{Zs}\t:*_№#.]{1,8}'
+value = '\d{3}-\d{3}-\d{3}[\p{Zs}-]\d{2}|\d{11}'
+min_digits = 11
+
+# A card or membership code after its label: "Код карточки: CARD-918264".
+[[context]]
+category = "IDENTITY"
+labels = ["код карточки", "номер карточки"]
+between = '[\p{Zs}\t:*_№#.]{1,8}'
+value = '\p{Alphabetic}{2,}-?\d{4,}'
+min_digits = 4
+
+# A cadastral number pins down one property, so it identifies its owner
+# like an address (the maintainer's decision on #484, item 2):
+# "кадастровый номер 99:07:0012345:678", "с кадастровым номером …", "КН
+# …", "кадастровый номер земельного участка: …". A cadastral quarter
+# ("99:07:0012345") is an area, not one property, and stays.
+[[context]]
+category = "IDENTITY"
+labels = [
+    "кадастровый", "кадастрового", "кадастровому", "кадастровым", "кадастровом",
+    "кадастровые", "кадастровыми", "кадастровых", "кадастровый номер", "кн", "к.н",
+]
+between = '(?:[\p{Zs}\t]+(?:номер\p{Alphabetic}{0,3}|№))?(?:[\p{Zs}\t]+(?:земельного|участка|объекта|недвижимости|помещения|здания|квартиры|сооружения|жилого|нежилого|дома)){0,3}[\p{Zs}\t:*_№#.]{1,8}'
+value = '\d{2}:\d{2}:\d{6,7}:\d{1,7}'
+min_digits = 10
+
+# A right's registration number in the state register pins down one
+# property too (#484, item 2): "номер регистрации права
+# 99:07:0012345:678-99/011/2031-4", "номер государственной регистрации от
+# 12.03.2031 № 99-99/011-99/011/001/2031-123/2".
+[[context]]
+category = "IDENTITY"
+labels = [
+    "номер регистрации", "номер государственной регистрации", "номером регистрации",
+    "номером государственной регистрации", "регистрационная запись",
+    "регистрационной записи", "запись регистрации", "записи регистрации",
+    "запись о регистрации", "записи о регистрации",
+]
+between = '(?:[\p{Zs}\t]+(?:права|прав|собственности|ипотеки|аренды|сделки|договора|в|ЕГРН|ЕГРП|от|\d{1,2}\.\d{1,2}\.\d{4}|г\.)){0,6}[\p{Zs}\t:*_№#.]{1,8}'
+value = '\d{2}:\d{2}:\d{6,7}:\d{1,7}-\d{2,3}/\d{3}/\d{4}-\d{1,7}|\d{2}-\d{2}(?:-\d{2})?/\d{3}(?:-\d{2}/\d{3}/\d{3})?/\d{4}-\d{1,7}(?:/\d{1,3})?'
+min_digits = 10
+
+# Cadastral and registration numbers by their shape, with no label: "участок
+# 99:07:0012345:678", "запись 99:07:0012345:678-99/011/2031-4" (#484,
+# item 2).
+[[span]]
+category = "IDENTITY"
+pattern = '\b\d{2}:\d{2}:\d{6,7}:\d{1,7}(?:-\d{2,3}/\d{3}/\d{4}-\d{1,7})?\b'
+
+# A number assigned to one person is IDENTITY (guide rule 6, the
+# maintainer's decision on #484, item 3; #483): an attorney's, a notary's
+# or an arbitration manager's register number after the register's name
+# ("регистрационный номер в реестре адвокатов Ольховской области 77/1234",
+# "в сводном реестре 99887", "в сводном государственном реестре
+# арбитражных управляющих за номером 12345"). A notarial act's own entry
+# ("зарегистрировано в реестре № …", "реестровый номер …" alone) is no
+# person's and stays. The whole labels are listed for a table column
+# headed by one, and name the person's number in text too ("реестровый
+# номер адвоката 77/1234").
+[[context]]
+category = "IDENTITY"
+labels = [
+    "реестре адвокатов", "реестре нотариусов", "реестре арбитражных управляющих",
+    "сводном реестре", "сводном государственном реестре",
+    "регистрационный номер в реестре адвокатов",
+    "регистрационный номер в реестре нотариусов",
+    "регистрационный номер в сводном реестре",
+    "регистрационный номер в сводном государственном реестре арбитражных управляющих",
+    "регистрационный номер адвоката", "регистрационный номер нотариуса",
+    "регистрационный номер арбитражного управляющего", "реестровый номер адвоката",
+    "реестровый номер нотариуса", "реестровый номер арбитражного управляющего",
+]
+between = '(?:[\p{Zs}\t]+(?:арбитражных[\p{Zs}\t]+управляющих|г\.|города|\p{Uppercase}[\p{Alphabetic}-]*|област\p{Alphabetic}*|кра\p{Alphabetic}*|республик\p{Alphabetic}*|за[\p{Zs}\t]+номером|под[\p{Zs}\t]+номером|номер\p{Alphabetic}{0,2})){0,5}[\p{Zs}\t:*_№#.—–-]{1,8}'
+value = '\d{1,3}/\d{1,6}(?:-н)?|\d{3,8}'
+min_digits = 3
+
+# A personal certificate's number (#484, item 3): "удостоверение адвоката №
+# 9917", "удостоверение № 1234", "удостоверением арбитражного управляющего
+# № АУ-5512".
+[[context]]
+category = "IDENTITY"
+labels = ["удостоверение", "удостоверения", "удостоверению", "удостоверением", "удостоверении"]
+between = '(?:[\p{Zs}\t]+(?:адвоката|нотариуса|арбитражного[\p{Zs}\t]+управляющего|инвалида|ветерана|сотрудника|личности)){0,2}[\p{Zs}\t:*_]*№[\p{Zs}\t:*_.]{0,6}'
+value = '(?:\p{Uppercase}{1,4}[\p{Zs}-]?)?\d{3,10}(?:/\d{1,6})?'
+min_digits = 3
+
+# Addresses (ADR 0092, issue #362): a street and a house ("д. 7"), after an
+# optional index, region and city, then a building and a flat or office:
+# "191187, Санкт-Петербург, Литейный проспект, д. 7, офис 12", "197101, г.
+# Москва, ул. Кедровая, д. 42-А, кв. 7", "Тверская область, г. Ржев, ул.
+# Тихих арок, д. 47, корп. 2, стр. 1, лит. Б, пом. 9". A city without "г."
+# leads only where a field or line starts, or after a lowercase word
+# ("адресу Псков, ул. Тихих залов, д. 29"), never mid-name ("Иван
+# Иванович, ул. …"). The parts also come in reverse, the flat first and the
+# city last, where a city without "г." ends its field: "кв. 9, д. 32,
+# переулок Бумажных лодок, Тверь", then an index. A city of several
+# words needs its "г." ("г. Нижний Новгород"): without one it reads as a
+# name (#362).
+[[span]]
+category = "ADDRESS"
+pattern = '(?:{index},\s*(?:(?:{region},\s*)?(?:{city}|{bare_city}),\s*)?|(?:{region},\s*)?{city},\s*|(?P<lead>{lead})(?:{region},\s*)?{bare_city},\s*)?{street},\s*{house}(?:,\s*{building})*(?:,\s*{flat})?|(?:{flat},\s*)?(?:{building},\s*)*{house},\s*(?:{building},\s*)*{street}(?:,\s*{city}(?:,\s*{index}\b)?|,\s*{bare_city}(?:,\s*{index}\b|(?P<tail>{tail})))?'
+parts.lead = '(?m:^)[\p{Zs}\t]*|[:|>(«"—–;,][\p{Zs}\t]*|\b\p{Ll}[\p{Ll}-]*[\p{Zs}\t]+'
+parts.tail = '[\p{Zs}\t]*(?:(?m:$)|[\r|<.;,()—–])'
+parts.region = '\b\p{Uppercase}[\p{Alphabetic}-]*[\p{Zs}\t](?:область|край)|\bРеспублика[\p{Zs}\t]\p{Uppercase}[\p{Alphabetic}-]*'
+parts.index = '\b\d{6}'
+parts.bare_city = '\b\p{Uppercase}[\p{Alphabetic}\d]*(?:-[\p{Alphabetic}\d]+)*'
+parts.city = '\bг\.[\p{Zs}\t]*\p{Uppercase}[\p{Alphabetic}\d-]*(?:[\p{Zs}\t]\p{Uppercase}[\p{Alphabetic}\d-]*){0,2}'
+parts.street = '(?:\bул\.|\bулица|\bпр-т|\bпр\.|\bпер\.|\bнаб\.|\bб-р|\bпл\.|\bш\.|\b(?:проспект|переулок|бульвар|шоссе|набережная|площадь|проезд|тупик|аллея|линия|тракт)\b)[\p{Zs}\t]*\p{Uppercase}[\p{Alphabetic}\d-]*(?:[\p{Zs}\t][\p{Alphabetic}\d-]+)?|\b\p{Uppercase}[\p{Alphabetic}-]*[\p{Zs}\t](?:проспект|переулок|улица|бульвар|шоссе|набережная|площадь|проезд|тупик|аллея|линия|тракт)'
+parts.house = '(?:\bд\.|\bдом)[\p{Zs}\t]*\d+(?:-\d+)?(?:-?\p{Alphabetic})?(?:/\d+(?:-?\p{Alphabetic})?)?'
+parts.building = '(?:\bкорп\.|\bкорпус|\bстр\.|\bстроение)[\p{Zs}\t]*\d+(?:-?\p{Alphabetic})?|\bлит(?:\.|ера)[\p{Zs}\t]*\p{Uppercase}\b'
+parts.flat = '(?:\bкв\.|\bквартира|\bофис|\bоф\.|\bпомещение|\bпом\.)[\p{Zs}\t]*\d+(?:-?\p{Alphabetic})?'
+
+# Dates of birth (ADR 0092): a date after "дата рождения", "д.р.", "род.",
+# "родился" is a personal date ("дата рождения 14 марта 1988 г.",
+# "Дата рождения: 19 февраля 1987 года"). Every other date stays. The value
+# must be one the DATE guesses take, a quoted day too ("«14» марта 1988 г."),
+# and the label may be in the cell before or on the line before.
+[[context]]
+category = "DATE"
+labels = ["дата рождения", "даты рождения", "д.р", "род", "родился", "родилась"]
+between = '[\p{Zs}\t:*_.,|]{0,10}(?:\r?\n[\p{Zs}\t|]*)?'
+value = '\d{1,2}[./]\d{1,2}[./]\d{2,4}(?:\p{Zs}?г\.)?|\d{4}-\d{2}-\d{2}|[«"]?\d{1,2}[»"]?\p{Zs}+\p{Alphabetic}+\p{Zs}+\d{4}(?:\p{Zs}*(?:г\.|года))?'
+only_guessed = ["DATE"]
+
+# Russian courts, public bodies, laws and legal databases are never web
+# addresses to replace (ADR 0094, guide rule 8): "kad.arbitr.ru/Card/…",
+# "http://pravo.gov.ru/proxy/ips/?docbody=…", "www.consultant.ru/document/…",
+# every "*.gov.ru" and every court's "*.sudrf.ru". Fedresurs is not listed:
+# its "/persons/…" pages are people's.
+[[url]]
+public = [
+    "gov.ru", "sudrf.ru", "arbitr.ru", "ksrf.ru", "vsrf.ru",
+    "consultant.ru", "garant.ru", "sudact.ru", "kodeks.ru", "cntd.ru",
+    "pravo.ru", "nalog.ru", "gosuslugi.ru", "mos.ru", "mos-sud.ru",
+    "mos-gorsud.ru", "rosreestr.ru", "kremlin.ru", "government.ru",
+    "sledcom.ru", "cbr.ru", "notariat.ru", "reestr-zalogov.ru",
+]
+
+# Legal references are never marked (guide rule 8, issue #480): a law's
+# number ("№ 127-ФЗ", "1-ФКЗ", "45-ОЗ"), an article of a code ("ст. 428 ГК
+# РФ", "статьи 431 ГК РФ", "п. 2 ст. 450", "428 ГК РФ").
+[[reference]]
+pattern = '\b\d{1,4}-(?:ФЗ|ФКЗ|КЗ|ОЗ|РЗ)\b|(?:\b(?:ст\.|стать(?:я|и|е|ю|ёй|ей|ям|ями|ях)|ч\.|част(?:ь|и|ью)|пп?\.|пункт(?:а|у|ом|е|ы|ов|ам)?)[\p{Zs}\t]*)?\b\d{1,4}(?:\.\d{1,3})*(?:[\p{Zs}\t]*(?:,|и)[\p{Zs}\t]*\d{1,4}(?:\.\d{1,3})*)*[\p{Zs}\t]+(?:ГК|ГПК|АПК|УК|УПК|КоАП|НК|ТК|ЖК|СК|БК|ЗК|ВК|КАС|ЛК|ГрК)(?:[\p{Zs}\t]+РФ)?\b|\b(?:ст\.|стать(?:я|и|е|ю|ёй|ей|ям|ями|ях))[\p{Zs}\t]*\d{1,4}(?:\.\d{1,3})*(?:[\p{Zs}\t]*(?:,|и)[\p{Zs}\t]*\d{1,4}(?:\.\d{1,3})*)*'
+
+# The number of a court act, an order or a transfer document is a
+# reference, no tax or other identifier: "Определение Верховного Суда РФ
+# от 12.03.2031 № 305-ЭС31-1234", "Определение судебной коллегии по
+# экономическим спорам Верховного Суда РФ … №", "Приказ Минфина России от
+# 01.02.2031 № 12н", "Постановление № 17", "УПД № 412" (guide rule 8, issue
+# #480). Between the act and its "№" only its author (capitalized words and
+# a court's own words) and its date: "Постановление направлено владельцу
+# паспорта № 4512345678" holds a passport number, and "ИНН 7701234567"
+# before a "№" stays. A case number keeps its label's rule ("по делу №
+# А40-…").
+[[reference]]
+pattern = '(?P<lead>\b(?:[Оо]пределени|[Пп]остановлени|[Пп]риказ|[Рр]аспоряжени|[Уу]каз|УПД|[Пп]ередаточн\p{Alphabetic}{0,4}[\p{Zs}\t]+документ)\p{Alphabetic}{0,4}(?:[\p{Zs}\t]+(?:\p{Uppercase}[\p{Alphabetic}.-]*|от|г\.|\d{1,2}\.\d{1,2}\.\d{2,4}|суда|судебной|коллегии|по|экономическим|гражданским|административным|уголовным|делам|спорам|арбитражного|округа|пленума|президиума)){0,16}[\p{Zs}\t]*№[\p{Zs}\t]*)\p{Alphabetic}{0,4}\d[\p{Alphabetic}\d/-]*'
+
+# A form's number and a classifier's code are no identifiers (guide rules 6
+# and 8, issue #486): "Форма № Р11001", "Форма по КНД 1111501", "Форма по
+# ОКУД 0401060", "код по ОКУД 0401060", "ОКВЭД 47.11, 47.19", "ОКТМО
+# 45382000", "КБК 18210102010011000110", "код ТН ВЭД 8471300000", a table
+# cell or a dash between the code and its value too ("ОКФС - 12"). These codes classify a form, an
+# activity, a place or a payment; an organization's own numbers (ОКПО,
+# ОГРН, ИНН, КПП) are no classifier's codes and stay.
+[[reference]]
+pattern = '\b[Фф]орм\p{Alphabetic}{0,2}[\p{Zs}\t]*(?:№|N|No\.?)[\p{Zs}\t]*\p{Alphabetic}{0,3}-?\d[\p{Alphabetic}\d.\-/]*|\b(?:[Фф]орм\p{Alphabetic}{0,2}[\p{Zs}\t]+)?(?:[Кк]од\p{Alphabetic}{0,2}[\p{Zs}\t]+)?(?:формы[\p{Zs}\t]+)?(?:по[\p{Zs}\t]+)?(?:ОКУД|КНД|ОКВЭД2?|ОКПД2?|ОКОПФ|ОКФС|ОКОГУ|ОКАТО|ОКТМО|ОКВ|ОКЕИ|ОКСМ|ОКИН|ОКОФ|ОКПДТР|ОКЗ|ОКСО|КБК|ТН[\p{Zs}\t]+ВЭД(?:[\p{Zs}\t]+ЕАЭС)?)\b[\p{Zs}\t:|*_№\-–—]*\d[\d.\-]*(?:[\p{Zs}\t]*[,;][\p{Zs}\t]*\d{2}(?:\.\d{1,2}){1,3})*'
+
+# A standard's or a building code's number is a reference, no identifier
+# (guide rule 8, issue #486): "ГОСТ Р 7.0.97-2016", "ГОСТ Р ИСО 9001-2015",
+# "ГОСТ 9238", "СП 2.13130.2020", "СНиП 2.01.07-85*", "СанПиН 2.1.3684-21",
+# "ТУ 1234-001-12345678-2020". Besides ГОСТ the number needs a dot or a
+# dash, so "СП «Восход»", a joint venture, stays.
+[[reference]]
+pattern = '\bГОСТ(?:[\p{Zs}\t]+(?:Р|ISO|ИСО|IEC|МЭК|EN|ЕН))*[\p{Zs}\t]+\d+(?:[.\-–/:]\d+)*\*?|\b(?:СП|СНиП|СанПиН|ТУ|ОСТ)(?:[\p{Zs}\t]+(?:ISO|ИСО))?[\p{Zs}\t]+\d+(?:[.\-–/]\d+)+\*?'
+
+# The page code under a tax or registration form's barcode, two groups of
+# four digits a column's gap apart alone on their line, or before the
+# form's ИНН, КПП or page boxes ("7000  2010", "2990  2026  КПП  Стр."), is
+# no tax or bank value (guide rule 8, issue #486). An account typed with
+# one space ("Account number:" then "1234 5678") stays, and so does a
+# passport's "4510 123456", with six digits after its series.
+[[reference]]
+pattern = '(?m:^)[\p{Zs}\t]*\d{4}[\p{Zs}\t]{2,}\d{4}(?:[\p{Zs}\t]*(?m:$)|(?P<tail>[\p{Zs}\t]+(?:ИНН|КПП|Стр\.)))'
+
+# A waybill's or an invoice's number is a document's, no bank or other
+# identifier (guide rule 8, issue #486): "ТН № 47", "ТТН № 112",
+# "товарной накладной № 15", "счёта-фактуры № 123/4". A bank account
+# after "счёт №" is no invoice's and stays.
+[[reference]]
+pattern = '\b(?:ТН|ТТН|ТрН|[Тт]оварно-транспортн\p{Alphabetic}*[\p{Zs}\t]+накладн\p{Alphabetic}*|[Тт]овар\p{Alphabetic}*[\p{Zs}\t]+накладн\p{Alphabetic}*|[Тт]ранспортн\p{Alphabetic}*[\p{Zs}\t]+накладн\p{Alphabetic}*|[Нн]акладн\p{Alphabetic}*|[Сс]ч[её]т\p{Alphabetic}{0,2}-фактур\p{Alphabetic}*)[\p{Zs}\t]*№[\p{Zs}\t]*\p{Alphabetic}{0,4}-?\d[\p{Alphabetic}\d/-]*'
+
+# The uppercase status alone is no one, as a person or an organization (#385,
+# #562); the surname «Ип» is written otherwise and stays.
+[[shape]]
+category = "PERSON"
+forbid = ['^[\s\p{P}]*ИП[\s\p{P}]*$']
+
+# The same as an organization.
+[[shape]]
+category = "ORG"
+forbid = ['^[\s\p{P}]*ИП[\s\p{P}]*$']

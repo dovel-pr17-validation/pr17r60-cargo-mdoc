@@ -1,0 +1,27 @@
+[package]
+name = "mdoc-pii"
+version = "0.1.0"
+edition = "2024"
+description = "Document-local pseudonymization review: candidates, identities and replacement provenance that follow editor history."
+license = "GPL-3.0-or-later"
+publish = false
+repository = "https://github.com/lawkitt/mdoc"
+
+# The review model is GUI-free: it follows editor history through plain
+# mdoc-history transactions. Detection models and UI stay in the application.
+[dependencies]
+aho-corasick = "=1.1.5"
+regex = "1"
+# CommonMark/GFM structure checks for manual selections with escapes or
+# emphasis characters.
+markdown = "1"
+# NFC for the text detection reads: decomposed letters compose (ADR 0092).
+unicode-normalization = "=0.1.25"
+mdoc-history = { path = "../mdoc-history" }
+
+[dev-dependencies]
+# Reads the identity maps of captured AI replies (ADR 0056).
+serde_json = "1"
+
+[lints]
+workspace = true

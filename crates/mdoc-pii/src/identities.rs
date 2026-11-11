@@ -1,0 +1,1179 @@
+//! Document-local identities. Policy history shares immutable values and follows
+//! editor history; typing never clones the mapping index. Nothing is serialized.
+use super::{Category, Review, exact_boundary, valid_replacement};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+    sync::Arc,
+};
+
+#[derive(Clone, Debug)]
+pub struct Identity {
+    pub id: u64,
+    pub alias: String,
+    pub category: Category,
+    pub owner: Option<u64>,
+    pub custom_alias: bool,
+}
+#[derive(Clone, Default)]
+pub struct IdentityPolicy {
+    edited: HashMap<u64, Arc<Identity>>,
+    /// Variant id → identity, overriding the identity the variant was seeded with.
+    variants: HashMap<u64, u64>,
+    kept: HashMap<u64, bool>,
+    /// Earlier aliases of merged or seeded identities, following mapping undo.
+    retired: HashMap<u64, Vec<String>>,
+    /// A saved or merge target's primary wording: it wins only among equally
+    /// long wordings, since the primary is the longest full form.
+    primary: HashMap<u64, Arc<str>>,
+    /// Variants whose entry in `variants` propagation made, not the user;
+    /// it may move them again (ADR 0092).
+    automatic: HashSet<u64>,
+    /// Dates of birth marked by hand: every mention counts, not only those
+    /// after its labels (#466); undone with the mark.
+    every_mention: HashSet<u64>,
+}
+pub type IdentitySnapshot = Arc<IdentityPolicy>;
+#[derive(Default)]
+pub(super) struct IdentityStore {
+    definitions: HashMap<u64, Arc<Identity>>,
+    policy: IdentitySnapshot,
+    normalized: HashMap<(Category, String), u64>,
+    history: HashMap<u64, IdentitySnapshot>,
+}
+impl IdentityStore {
+    pub(super) fn primary_wording(&self, id: u64) -> Option<&Arc<str>> {
+        self.policy.primary.get(&id)
+    }
+    /// Whether the user linked variant `group` to another identity.
+    pub(super) fn reassigned(&self, group: u64) -> bool {
+        self.policy.variants.contains_key(&group) && !self.policy.automatic.contains(&group)
+    }
+    /// Whether a mark lets every mention of variant `group` count.
+    pub(super) fn every_mention(&self, group: u64) -> bool {
+        self.policy.every_mention.contains(&group)
+    }
+    /// Every mention of variant `group` counts, as part of the current
+    /// undo step.
+    pub(super) fn count_every_mention(&mut self, group: u64) {
+        Arc::make_mut(&mut self.policy).every_mention.insert(group);
+    }
+    /// Whether propagation linked variant `group` in the policy.
+    pub(super) fn linked_automatically(&self, group: u64) -> bool {
+        self.policy.automatic.contains(&group)
+    }
+    /// Propagation's link of `group` to `target`, part of the current undo
+    /// step; `None` drops it, back to the variant's seed identity.
+    pub(super) fn link_automatically(&mut self, group: u64, target: Option<u64>) {
+        let policy = Arc::make_mut(&mut self.policy);
+        match target {
+            Some(target) => {
+                policy.variants.insert(group, target);
+                policy.automatic.insert(group);
+            }
+            None => {
+                policy.variants.remove(&group);
+                policy.automatic.remove(&group);
+            }
+        }
+    }
+    pub(super) fn retired_aliases(&self, id: u64) -> &[String] {
+        self.policy.retired.get(&id).map_or(&[], Vec::as_slice)
+    }
+    pub(super) fn seed_restoration(
+        &mut self,
+        id: u64,
+        aliases: &[String],
+        primary: Option<&Arc<str>>,
+    ) {
+        let policy = Arc::make_mut(&mut self.policy);
+        if !aliases.is_empty() {
+            policy.retired.insert(id, aliases.to_vec());
+        }
+        if let Some(primary) = primary {
+            policy.primary.insert(id, primary.clone());
+        }
+    }
+    pub(crate) fn normalized_identity(&self, value: &str, category: Category) -> Option<u64> {
+        self.normalized
+            .get(&(category, normalization_key(value, category)))
+            .copied()
+            .filter(|id| self.get(*id).is_some_and(|i| i.category == category))
+    }
+    pub(crate) fn remember_normalized(&mut self, value: &str, category: Category, id: u64) {
+        self.normalized
+            .insert((category, normalization_key(value, category)), id);
+    }
+    pub(crate) fn add(&mut self, identity: Identity) {
+        self.definitions.insert(identity.id, Arc::new(identity));
+    }
+    pub(crate) fn ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.definitions.keys().copied()
+    }
+    pub(crate) fn aliases(&self) -> impl Iterator<Item = &str> {
+        self.ids()
+            .filter_map(|id| self.get(id))
+            .map(|i| i.alias.as_str())
+    }
+    fn get(&self, id: u64) -> Option<&Identity> {
+        // Removing a definition is irreversible, including for old snapshots.
+        self.definitions.get(&id)?;
+        self.policy
+            .edited
+            .get(&id)
+            .or_else(|| self.definitions.get(&id))
+            .map(AsRef::as_ref)
+    }
+    pub fn on_transaction(&mut self, tx: &mdoc_history::EditorTransaction) {
+        for change in &tx.changes {
+            self.history
+                .entry(change.before)
+                .or_insert_with(|| self.policy.clone());
+            if change.edits.is_empty() {
+                if let Some(policy) = self.history.get(&change.after) {
+                    self.policy = policy.clone();
+                }
+            } else {
+                self.history.insert(change.after, self.policy.clone());
+            }
+        }
+        self.history.retain(|id, _| tx.retained.contains(id));
+    }
+}
+
+/// The key two wordings of one subject share: case, whitespace, quotes and
+/// line-end hyphens inside words aside, and a Russian full name with a
+/// patronymic in any case, in its own word order ("Эльзы-Руты Мартыновны
+/// Таль-Шнейдер" is "Эльза-Рута Мартыновна Таль-Шнейдер").
+pub(crate) fn normalization_key(value: &str, category: Category) -> String {
+    if category == Category::Url {
+        return url_key(value);
+    }
+    if category == Category::Email {
+        return canonical_raw(value);
+    }
+    let words = name_words(value);
+    if category == Category::Person
+        && words.len() == 3
+        && words.iter().all(|w| cyrillic(w))
+        && let Some(nominative) = crate::propagation::nominative(&words)
+    {
+        return nominative.join(" ");
+    }
+    canonical(value)
+}
+/// A web address's identity (ADR 0094): `http` or `https`, a leading
+/// `www.` and a trailing slash are writings of one address; anything else,
+/// letter case included, is another.
+fn url_key(value: &str) -> String {
+    fn strip<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+        text.get(..prefix.len())
+            .filter(|head| head.eq_ignore_ascii_case(prefix))
+            .map(|_| &text[prefix.len()..])
+    }
+    let value = value.trim();
+    let rest = strip(value, "https://")
+        .or_else(|| strip(value, "http://"))
+        .unwrap_or(value);
+    let rest = strip(rest, "www.").unwrap_or(rest);
+    rest.strip_suffix('/').unwrap_or(rest).to_owned()
+}
+fn canonical(value: &str) -> String {
+    canonical_raw(&crate::view::wording(value))
+}
+fn canonical_raw(value: &str) -> String {
+    crate::view::unwrapped(value)
+        .replace(['«', '»', '“', '”'], "\"")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+/// Lowercase courtesy titles that precede a name and never identify anyone.
+pub(crate) const TITLES: [&str; 7] = ["mr", "mrs", "ms", "miss", "mx", "dr", "prof"];
+fn name_parts(value: &str) -> Vec<String> {
+    value
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|v| !v.is_empty())
+        .map(str::to_lowercase)
+        .filter(|v| v != "ип" && !TITLES.contains(&v.as_str()))
+        .collect()
+}
+/// Whitespace-separated name words, lowercased, without titles or edge
+/// punctuation: "Ms. O'Neil," → `["o'neil"]`.
+pub(crate) fn name_words(value: &str) -> Vec<String> {
+    name_words_cased(value)
+        .into_iter()
+        .map(|w| w.to_lowercase())
+        .collect()
+}
+/// [`name_words`] as written, so a lowercase particle ("де") can be told
+/// from a given name ("Van Morrison"). A word split by a line-end hyphen is
+/// one word ("Верес-\nтова" is "Верестова").
+pub(crate) fn name_words_cased(value: &str) -> Vec<String> {
+    crate::view::unwrapped(&crate::view::wording(value))
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphabetic()).to_owned())
+        .filter(|w| !w.is_empty() && !TITLES.contains(&w.to_lowercase().as_str()))
+        .collect()
+}
+/// Lowercase Cyrillic, with hyphens, and spaces inside a surname with a
+/// particle ("де лаваль").
+pub(crate) fn cyrillic(word: &str) -> bool {
+    word.chars()
+        .all(|c| matches!(c, 'а'..='я' | 'ё' | '-' | ' '))
+}
+/// Lowercase particles that belong to the surname after them ("де Лаваль",
+/// "van der Berg").
+const PARTICLES: [&str; 20] = [
+    "de", "van", "von", "der", "den", "da", "di", "du", "del", "della", "le", "la", "фон", "ван",
+    "де", "дер", "ди", "дю", "ла", "ле",
+];
+/// A particle as written: lowercase only, so "Van" in "Van Morrison" is a
+/// given name.
+pub(crate) fn is_particle(word: &str) -> bool {
+    PARTICLES.contains(&word)
+}
+/// Name words as written, lowercased, with each run of lowercase particles
+/// joined to the word after it: `["Генриетта", "Яновна", "де", "Лаваль"]` →
+/// `["генриетта", "яновна", "де лаваль"]`.
+pub(crate) fn merge_particles<S: AsRef<str>>(words: &[S]) -> Vec<String> {
+    let mut merged = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+    for word in words {
+        let word = word.as_ref();
+        pending.push(word.to_lowercase());
+        if !is_particle(word) {
+            merged.push(pending.join(" "));
+            pending.clear();
+        }
+    }
+    merged.extend(pending);
+    merged
+}
+pub(crate) fn patronymic(word: &str) -> bool {
+    ["ович", "евич", "овна", "евна", "ична"]
+        .iter()
+        .any(|s| word.ends_with(s))
+}
+/// How surely a Russian word is a surname: 2 for endings first names almost
+/// never have, 1 for "-ина" (Петрова Ирина, Ирина Пушкина), 0 otherwise.
+fn russian_surname_score(word: &str) -> u8 {
+    const STRONG: [&str; 10] = [
+        "ов", "ев", "ёв", "ова", "ева", "ёва", "ский", "ская", "цкий", "цкая",
+    ];
+    if STRONG.iter().any(|s| word.ends_with(s)) {
+        2
+    } else if ["ин", "ын", "ина", "ына"].iter().any(|s| word.ends_with(s)) {
+        1
+    } else {
+        0
+    }
+}
+/// The surname and given names of a full person name, or `None` when the
+/// wording is not one (a single word, initials) or the surname is ambiguous.
+pub(crate) fn split_full_name(value: &str) -> Option<(String, Vec<String>)> {
+    split_full_name_inflected(value).map(|(surname, given, _)| (surname, given))
+}
+/// A full name's surname and given names as the document wrote them.
+pub(crate) type Written = Option<(String, Vec<String>)>;
+/// [`split_full_name`], in the nominative when the name came inflected
+/// ("Эльзе-Руте Мартыновне Таль-Шнейдер"), with the words as written then.
+pub(crate) fn split_full_name_inflected(value: &str) -> Option<(String, Vec<String>, Written)> {
+    let mut words = name_words(value);
+    let full = |w: &String| {
+        w.chars().filter(|c| c.is_alphabetic()).count() > 1
+            && w.chars()
+                .all(|c| c.is_alphabetic() || matches!(c, '-' | '\'' | '’'))
+    };
+    if !(2..=4).contains(&words.len()) || !words.iter().all(full) {
+        return None;
+    }
+    // A lowercase particle is part of the surname after it.
+    words = merge_particles(&name_words_cased(value));
+    if words.len() < 2 {
+        return None;
+    }
+    let last = words.len() - 1;
+    let russian = words.iter().all(|w| cyrillic(w));
+    // An inflected name with a patronymic is read in the nominative
+    // ("Павлову Дмитрию Андреевичу": Павлов Дмитрий Андреевич).
+    let nominative = (russian && words.len() >= 3)
+        .then(|| crate::propagation::nominative(&words))
+        .flatten();
+    let mut written = None;
+    if let Some(nominative) = nominative {
+        written = Some(std::mem::replace(&mut words, nominative));
+    }
+    // Still inflected, or first name + patronymic, which has no surname.
+    if russian
+        && words
+            .iter()
+            .any(|w| crate::propagation::patronymic_like(w) && (!patronymic(w) || words.len() == 2))
+    {
+        return None;
+    }
+    let surname = if !russian {
+        last
+    } else if words.len() == 3 && patronymic(&words[2]) && !patronymic(&words[1]) {
+        0
+    } else if words.len() == 3 && patronymic(&words[1]) {
+        2
+    } else if words.len() == 2 {
+        // "Петров Иван" or "Иван Петров"; "Ирина Пушкина" is left unsplit.
+        match russian_surname_score(&words[0]).cmp(&russian_surname_score(&words[1])) {
+            std::cmp::Ordering::Greater => 0,
+            std::cmp::Ordering::Less => 1,
+            std::cmp::Ordering::Equal if russian_surname_score(&words[1]) == 0 => 1,
+            std::cmp::Ordering::Equal => return None,
+        }
+    } else {
+        last
+    };
+    let written = written.map(|mut written| (written.remove(surname), written));
+    let surname = words.remove(surname);
+    (surname.chars().count() >= 3).then_some((surname, words, written))
+}
+/// Lowercase wordings that stand for `surname` alone: itself and, for a
+/// Russian surname, its conservative case forms ("раман" → "рамана",
+/// "раману"). Some forms are shared with relatives ("петрова"), so a form
+/// links only when one full name fits (ADR 0092).
+pub(crate) fn surname_forms(surname: &str) -> Vec<String> {
+    // With a particle: its forms with the particle and without it ("де
+    // Лаваль", "Лаваль").
+    if let Some((particles, base)) = surname.rsplit_once(' ') {
+        let base = surname_forms(base);
+        let mut forms: Vec<String> = base.iter().map(|f| format!("{particles} {f}")).collect();
+        forms.extend(base);
+        forms.sort_unstable();
+        forms.dedup();
+        return forms;
+    }
+    let mut forms = vec![surname.to_owned()];
+    if cyrillic(surname) {
+        let mut decline = |stem: &str, endings: &[&str]| {
+            forms.extend(endings.iter().map(|e| format!("{stem}{e}")));
+        };
+        if let Some(stem) = surname
+            .strip_suffix("ий")
+            .filter(|s| s.ends_with("ск") || s.ends_with("цк"))
+        {
+            decline(stem, &["ого", "ому", "им", "ом"]);
+        } else if let Some(stem) = surname
+            .strip_suffix("ая")
+            .filter(|s| s.ends_with("ск") || s.ends_with("цк"))
+        {
+            decline(stem, &["ой", "ую"]);
+        } else if ["ова", "ева", "ёва", "ина", "ына"]
+            .iter()
+            .any(|s| surname.ends_with(s))
+        {
+            // A feminine nominative, or the genitive of "Петров".
+            let stem = surname.strip_suffix('а').unwrap();
+            decline(stem, &["ой", "у", "", "ым", "е"]);
+        } else if surname
+            .chars()
+            .next_back()
+            .is_some_and(|c| !"аеёиоуыэюяйь-".contains(c))
+        {
+            let instrumental = if ["ов", "ев", "ёв", "ин", "ын"]
+                .iter()
+                .any(|s| surname.ends_with(s))
+            {
+                "ым"
+            } else {
+                "ом"
+            };
+            decline(surname, &["а", "у", instrumental, "е"]);
+        }
+    }
+    forms.sort_unstable();
+    forms.dedup();
+    forms
+}
+fn surname_related(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    // Suggestions only: Russian case endings with two matching initials. A
+    // shared surname or character similarity never establishes identity.
+    let stem = |s: &str| {
+        for suffix in [
+            "овой", "евым", "овым", "еву", "ову", "ева", "ова", "евой", "ину", "ина", "иной", "ым",
+            "ой", "ую", "у", "а",
+        ] {
+            if let Some(stem) = s.strip_suffix(suffix)
+                && stem.chars().count() >= 5
+            {
+                return stem.to_owned();
+            }
+        }
+        s.to_owned()
+    };
+    stem(a) == stem(b)
+}
+fn related_name(a: &str, b: &str) -> bool {
+    let a = name_parts(a);
+    let b = name_parts(b);
+    if a.len() != 3 || b.len() != 3 {
+        return false;
+    }
+    if b[1].chars().count() == 1 && b[2].chars().count() == 1 {
+        let initials = |x: &str, y: &str| x.chars().next() == y.chars().next();
+        return (surname_related(&a[0], &b[0]) && initials(&a[1], &b[1]) && initials(&a[2], &b[2]))
+            || (surname_related(&a[2], &b[0]) && initials(&a[0], &b[1]) && initials(&a[1], &b[2]));
+    }
+    a.iter().zip(&b).all(|(x, y)| surname_related(x, y))
+}
+/// Whether `part` occurs as whole words inside the longer `whole` ("Raman" in
+/// "Priya Raman"): a proposed link, never an automatic one.
+/// Containment suggests only names: "Alice" inside `Alice@example.com` is not
+/// that email's identity.
+fn is_name(category: Category) -> bool {
+    matches!(category, Category::Person | Category::Organization)
+}
+fn contained_name(whole: &str, part: &str) -> bool {
+    whole.len() > part.len()
+        && whole
+            .match_indices(part)
+            .any(|(start, _)| exact_boundary(whole, &(start..start + part.len()), part))
+}
+impl Review {
+    /// Match the case identity by both its aliases and original wording.
+    /// A join may have reassigned a creation alias to a different person.
+    /// Dormant seeds and pending renames still retain their wording ownership.
+    pub fn forget_case_identity(&mut self, aliases: &[&str], originals: &[String]) {
+        let ids: Vec<_> =
+            self.identities
+                .ids()
+                .filter(|id| {
+                    let alias_matches =
+                        self.identity(*id)
+                            .is_some_and(|identity| aliases.contains(&identity.alias.as_str()))
+                            || self
+                                .identities
+                                .definitions
+                                .get(id)
+                                .is_some_and(|identity| aliases.contains(&identity.alias.as_str()))
+                            || self.identities.history.values().any(|policy| {
+                                policy.edited.get(id).is_some_and(|identity| {
+                                    aliases.contains(&identity.alias.as_str())
+                                })
+                            });
+                    alias_matches
+                        && (self.variants().iter().any(|variant| {
+                            originals
+                                .iter()
+                                .any(|original| original.as_str() == variant.original.as_ref())
+                                && (self.variant_identity(variant.id) == Some(*id)
+                                    || self.candidates().iter().any(|candidate| {
+                                        candidate.variant == variant.id
+                                            && self.occurrence_identity(
+                                                candidate.variant,
+                                                &candidate.range,
+                                            ) == Some(*id)
+                                    }))
+                        }) || self.applied().iter().any(|applied| {
+                            applied.step.identity == *id
+                                && originals
+                                    .iter()
+                                    .any(|original| original == applied.step.original())
+                        }))
+                })
+                .collect();
+        for id in ids {
+            self.forget_identity(id);
+        }
+    }
+    /// Stop proposing `category` (ADR 0076): forget its identities that are
+    /// scan proposals only. An identity that replaced text (now or in undo
+    /// history), or that has a manual, case or restored variant, stays.
+    /// Returns how many identities were forgotten.
+    pub fn withdraw_detected(&mut self, category: Category) -> usize {
+        let ids: Vec<_> = self
+            .identities
+            .ids()
+            .filter(|&id| {
+                let mut variants = self
+                    .variants()
+                    .iter()
+                    .filter(|variant| self.variant_identity(variant.id) == Some(id))
+                    .peekable();
+                self.identity(id).is_some_and(|i| i.category == category)
+                    && variants.peek().is_some()
+                    && variants.all(|variant| variant.detected && variant.priority == 0)
+                    && !self.tracking.uses_identity(id)
+            })
+            .collect();
+        for &id in &ids {
+            self.forget_identity(id);
+        }
+        ids.len()
+    }
+    /// Forget the mapping in live state and metadata history. Text is untouched;
+    /// undo/redo cannot bring this mapping back (ADR 0041, ADR 0077).
+    pub fn forget_identity(&mut self, id: u64) {
+        self.revision.advance();
+        let groups: HashSet<_> = self
+            .variants()
+            .iter()
+            .filter(|variant| {
+                self.variant_identity(variant.id) == Some(id)
+                    && !self.candidates().iter().any(|candidate| {
+                        candidate.variant == variant.id
+                            && self
+                                .occurrence_identity(candidate.variant, &candidate.range)
+                                .is_some_and(|owner| owner != id)
+                    })
+            })
+            .map(|variant| variant.id)
+            .collect();
+        self.candidates.forget(&groups);
+        self.tracking.forget_identity(id);
+        self.identities.definitions.remove(&id);
+        for identity in self.identities.definitions.values_mut() {
+            if identity.owner == Some(id) {
+                Arc::make_mut(identity).owner = None;
+            }
+        }
+        self.identities.normalized.retain(|_, owner| *owner != id);
+        let scrub = |policy: &mut IdentitySnapshot| {
+            let policy = Arc::make_mut(policy);
+            policy.edited.remove(&id);
+            policy.retired.remove(&id);
+            policy.primary.remove(&id);
+            policy
+                .variants
+                .retain(|group, owner| !groups.contains(group) && *owner != id);
+            policy.kept.retain(|group, _| !groups.contains(group));
+            policy.automatic.retain(|group| !groups.contains(group));
+            for identity in policy.edited.values_mut() {
+                if identity.owner == Some(id) {
+                    Arc::make_mut(identity).owner = None;
+                }
+            }
+        };
+        scrub(&mut self.identities.policy);
+        for policy in self.identities.history.values_mut() {
+            scrub(policy);
+        }
+        self.discovery_version += 1;
+        let source = self.source.clone();
+        self.refresh(&source);
+    }
+    pub fn identity(&self, id: u64) -> Option<&Identity> {
+        self.identities.get(id)
+    }
+    pub fn variant_identity(&self, group: u64) -> Option<u64> {
+        self.variant_lineage(group)
+            .find_map(|g| self.identities.policy.variants.get(&g.id).copied())
+            .or_else(|| self.variant(group).map(|g| g.identity))
+            .filter(|id| self.identities.get(*id).is_some())
+    }
+    fn variant_lineage(&self, group: u64) -> impl Iterator<Item = &super::Variant> {
+        std::iter::successors(self.variant(group), |g| {
+            g.source_variant.and_then(|id| self.variant(id))
+        })
+    }
+    pub fn occurrence_identity(&self, group: u64, range: &Range<usize>) -> Option<u64> {
+        self.tracking
+            .assignment(range)
+            .map(|a| a.identity)
+            .or_else(|| self.variant_identity(group))
+    }
+    pub fn identity_snapshot(&self) -> IdentitySnapshot {
+        self.identities.policy.clone()
+    }
+    pub fn restore_identity_snapshot(&mut self, snapshot: IdentitySnapshot) {
+        self.revision.advance();
+        self.identities.policy = snapshot;
+        self.sync_identity_variants();
+    }
+    pub fn commit_identity_snapshot(&mut self, before: u64, after: u64, old: IdentitySnapshot) {
+        self.revision.advance();
+        self.identities.history.insert(before, old);
+        self.identities
+            .history
+            .insert(after, self.identities.policy.clone());
+    }
+    pub(super) fn sync_identity_variants(&mut self) {
+        let policies: Vec<_> = self
+            .variants()
+            .iter()
+            .map(|group| {
+                let kept = self
+                    .variant_lineage(group.id)
+                    .find_map(|g| self.identities.policy.kept.get(&g.id).copied())
+                    .unwrap_or(group.keep_default);
+                (kept, self.variant_identity(group.id))
+            })
+            .collect();
+        let mut matching_changed = false;
+        for (group, (kept, id)) in self.candidates.variants.iter_mut().zip(policies) {
+            group.kept = kept;
+            if let Some(identity) = id.and_then(|id| self.identities.get(id)) {
+                matching_changed |= matches!(group.category, Category::Url | Category::Email)
+                    != matches!(identity.category, Category::Url | Category::Email);
+                group.category = identity.category;
+                group.replacement.clone_from(&identity.alias);
+            }
+        }
+        if matching_changed {
+            self.candidates.matcher = None;
+            self.discovery_version += 1;
+        }
+    }
+    /// Identities that still own a pending or applied mention. One whose
+    /// mentions all moved elsewhere frees its alias.
+    pub fn active_identities(&self) -> Vec<u64> {
+        let mut ids: HashSet<_> = self
+            .candidates()
+            .iter()
+            .filter(|c| self.variant(c.variant).is_some_and(|g| !g.kept))
+            .filter_map(|c| self.occurrence_identity(c.variant, &c.range))
+            .collect();
+        ids.extend(
+            self.applied()
+                .iter()
+                .map(|a| a.step.identity)
+                .filter(|id| *id != 0),
+        );
+        let mut ids: Vec<_> = ids.into_iter().collect();
+        ids.sort_unstable();
+        ids
+    }
+    pub fn identity_count(&self, id: u64) -> usize {
+        self.candidates()
+            .iter()
+            .filter(|o| self.occurrence_identity(o.variant, &o.range) == Some(id))
+            .count()
+            + self
+                .applied()
+                .iter()
+                .filter(|o| o.step.identity == id)
+                .count()
+    }
+    /// A variant off only by default: an undone step that switched it on
+    /// (a case join, a manual addition) withdrew it. No Keep of its own.
+    pub(super) fn withdrawn(&self, group: u64) -> bool {
+        self.variant(group).is_some_and(|g| g.keep_default)
+            && !self
+                .variant_lineage(group)
+                .any(|g| self.identities.policy.kept.contains_key(&g.id))
+    }
+    pub(super) fn set_kept(&mut self, group: u64, kept: bool) {
+        Arc::make_mut(&mut self.identities.policy)
+            .kept
+            .insert(group, kept);
+        self.sync_identity_variants();
+    }
+    pub fn rename_identity(&mut self, id: u64, alias: &str) -> Result<(), String> {
+        self.revision.advance();
+        if self.reserved_tokens.contains(alias) {
+            return Err("That alias was retired by the case. Choose another alias.".into());
+        }
+        if !valid_replacement(alias) {
+            return Err("Use an ASCII alias with letters, digits, underscores or hyphens (up to 128 characters).".into());
+        }
+        if self
+            .active_identities()
+            .into_iter()
+            .any(|other| other != id && self.identity(other).is_some_and(|i| i.alias == alias))
+        {
+            return Err(
+                "That alias belongs to another identity. Use Assign or Merge instead.".into(),
+            );
+        }
+        let mut identity = self
+            .identity(id)
+            .ok_or("Identity is no longer available.")?
+            .clone();
+        if identity.alias != alias
+            && self.source.match_indices(alias).any(|(start, _)| {
+                let token = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+                !self.source[..start].chars().next_back().is_some_and(token)
+                    && !self.source[start + alias.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(token)
+            })
+        {
+            return Err(
+                "That alias is already present in the document. Choose a different alias.".into(),
+            );
+        }
+        // No mention uses the alias any more (checked above): identities left
+        // idle by earlier moves hand it over and take fresh ones.
+        let idle: Vec<_> = self
+            .identities
+            .ids()
+            .filter(|&other| other != id && self.identity(other).is_some_and(|i| i.alias == alias))
+            .collect();
+        for other in idle {
+            let mut idle = self.identity(other).unwrap().clone();
+            idle.alias = self.allocate_alias(idle.category);
+            idle.custom_alias = false;
+            Arc::make_mut(&mut self.identities.policy)
+                .edited
+                .insert(other, Arc::new(idle));
+        }
+        identity.alias = alias.into();
+        identity.custom_alias = true;
+        self.occupied_tokens.insert(alias.into());
+        Arc::make_mut(&mut self.identities.policy)
+            .edited
+            .insert(id, Arc::new(identity));
+        self.sync_identity_variants();
+        Ok(())
+    }
+    pub fn recategorize_identity(&mut self, id: u64, category: Category) -> Result<(), String> {
+        self.revision.advance();
+        let mut identity = self
+            .identity(id)
+            .ok_or("Identity is no longer available.")?
+            .clone();
+        if identity.category != category {
+            if !identity.custom_alias {
+                identity.alias = self.allocate_alias(category);
+            }
+            identity.category = category;
+            identity.owner = None;
+            Arc::make_mut(&mut self.identities.policy)
+                .edited
+                .insert(id, Arc::new(identity));
+            self.sync_identity_variants();
+            if !matches!(category, Category::Person | Category::Organization) {
+                let dependents: Vec<_> = self
+                    .active_identities()
+                    .into_iter()
+                    .filter(|target| self.identity(*target).is_some_and(|i| i.owner == Some(id)))
+                    .collect();
+                for dependent in dependents {
+                    self.set_owner(dependent, None)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    /// The identity currently called `alias`, preferring one with mentions.
+    pub fn identity_by_alias(&self, alias: &str) -> Option<u64> {
+        let active = self.active_identities();
+        active
+            .iter()
+            .copied()
+            .chain(self.identities.ids())
+            .find(|id| self.identity(*id).is_some_and(|i| i.alias == alias))
+    }
+    /// Give several identities new aliases (and categories) at once, as a case
+    /// does when a document joins it. The result must leave active aliases
+    /// unique; nothing changes otherwise.
+    pub fn reassign_aliases(
+        &mut self,
+        changes: &[(u64, String, Category, bool)],
+    ) -> Result<(), String> {
+        self.revision.advance();
+        let mut aliases: HashMap<u64, String> = self
+            .active_identities()
+            .into_iter()
+            .filter_map(|id| Some((id, self.identity(id)?.alias.clone())))
+            .collect();
+        for (id, alias, _, _) in changes {
+            if !valid_replacement(alias) || self.identity(*id).is_none() {
+                return Err("Identity or alias is no longer valid.".into());
+            }
+            aliases.insert(*id, alias.clone());
+        }
+        let mut seen = HashSet::new();
+        if aliases.values().any(|a| !seen.insert(a)) {
+            return Err("Two identities would share an alias.".into());
+        }
+        for (id, alias, category, custom) in changes {
+            let mut identity = self.identity(*id).unwrap().clone();
+            if identity.category != *category {
+                identity.owner = None;
+            }
+            identity.alias = alias.clone();
+            identity.category = *category;
+            identity.custom_alias = *custom;
+            self.occupied_tokens.insert(alias.clone());
+            if let Some((c, n)) = crate::restore::parse_alias(alias) {
+                let counter = self.counters.entry(c).or_default();
+                *counter = (*counter).max(n as usize);
+            }
+            Arc::make_mut(&mut self.identities.policy)
+                .edited
+                .insert(*id, Arc::new(identity));
+        }
+        // Contacts owned by an identity that is no longer a person or
+        // organization lose that owner, as in `recategorize_identity`.
+        let demoted: HashSet<u64> = changes
+            .iter()
+            .filter(|(_, _, c, _)| !matches!(c, Category::Person | Category::Organization))
+            .map(|c| c.0)
+            .collect();
+        if !demoted.is_empty() {
+            let dependents: Vec<_> = self
+                .identities
+                .ids()
+                .filter(|id| {
+                    self.identity(*id)
+                        .and_then(|i| i.owner)
+                        .is_some_and(|owner| demoted.contains(&owner))
+                })
+                .collect();
+            for id in dependents {
+                let mut identity = self.identity(id).unwrap().clone();
+                identity.owner = None;
+                Arc::make_mut(&mut self.identities.policy)
+                    .edited
+                    .insert(id, Arc::new(identity));
+            }
+        }
+        // An idle identity that held one of these aliases takes a fresh one.
+        let moved: HashSet<_> = changes.iter().map(|c| c.0).collect();
+        let claimed: HashSet<_> = changes.iter().map(|c| c.1.clone()).collect();
+        let idle: Vec<_> = self
+            .identities
+            .ids()
+            .filter(|id| !moved.contains(id))
+            .filter(|id| {
+                self.identity(*id)
+                    .is_some_and(|i| claimed.contains(&i.alias))
+            })
+            .collect();
+        for id in idle {
+            let mut identity = self.identity(id).unwrap().clone();
+            identity.alias = self.allocate_alias(identity.category);
+            identity.custom_alias = false;
+            Arc::make_mut(&mut self.identities.policy)
+                .edited
+                .insert(id, Arc::new(identity));
+        }
+        self.sync_identity_variants();
+        Ok(())
+    }
+    /// The alias choosing `category` for `identity` gives (#179). `whole`:
+    /// the choice covers all of its mentions and recategorizes it, which keeps
+    /// a custom alias; otherwise the chosen mentions split off under a new
+    /// alias. `None` when the alias stays as it is.
+    pub fn category_choice_alias(
+        &self,
+        identity: u64,
+        category: Category,
+        whole: bool,
+    ) -> Option<String> {
+        let current = self.identity(identity)?;
+        if !whole {
+            Some(self.next_alias(category))
+        } else if current.category == category || current.custom_alias {
+            None
+        } else {
+            Some(self.next_alias(category))
+        }
+    }
+    /// Preview without reserving a token or mutating policy on every render.
+    pub fn next_alias(&self, category: Category) -> String {
+        let mut count = self.counters.get(&category).copied().unwrap_or(0);
+        loop {
+            count += 1;
+            let alias = format!("{}_{count}", category.token());
+            if !self.occupied_tokens.contains(&alias) {
+                return alias;
+            }
+        }
+    }
+    pub(super) fn allocate_alias(&mut self, category: Category) -> String {
+        let count = self.counters.entry(category).or_default();
+        loop {
+            *count += 1;
+            let alias = format!("{}_{count}", category.token());
+            if self.occupied_tokens.insert(alias.clone()) {
+                return alias;
+            }
+        }
+    }
+    pub fn new_identity(&mut self, category: Category) -> u64 {
+        self.revision.advance();
+        let alias = self.allocate_alias(category);
+        self.next_id += 1;
+        let id = self.next_id;
+        self.identities.add(Identity {
+            id,
+            alias,
+            category,
+            owner: None,
+            custom_alias: false,
+        });
+        id
+    }
+    pub fn assign_variant(&mut self, group: u64, target: u64) -> Result<(), String> {
+        self.revision.advance();
+        self.variant(group)
+            .ok_or("Variant is no longer available.")?;
+        self.identity(target)
+            .ok_or("Identity is no longer available.")?;
+        let policy = Arc::make_mut(&mut self.identities.policy);
+        policy.variants.insert(group, target);
+        // The user's link: propagation no longer moves it.
+        policy.automatic.remove(&group);
+        self.sync_identity_variants();
+        Ok(())
+    }
+    /// Link `from` into `target`, which keeps its alias; `from`'s alias
+    /// retires and keeps restoring (ADR 0041, ADR 0080). All or nothing: an
+    /// error leaves the identities as they were.
+    pub fn merge_identity(&mut self, from: u64, target: u64) -> Result<(), String> {
+        self.revision.advance();
+        if from == target {
+            return Ok(());
+        }
+        let old = self.identity_snapshot();
+        let merged = self.merge_identity_into(from, target);
+        if merged.is_err() {
+            self.restore_identity_snapshot(old);
+        }
+        merged
+    }
+    fn merge_identity_into(&mut self, from: u64, target: u64) -> Result<(), String> {
+        self.identity(target)
+            .ok_or("Identity is no longer available.")?;
+        let alias = self
+            .identity(from)
+            .ok_or("Identity is no longer available.")?
+            .alias
+            .clone();
+        let exported = self.export_identities_with_ids();
+        let primary = exported
+            .iter()
+            .find(|(id, _)| *id == target)
+            .map(|(_, e)| e.originals[0].clone());
+        let mut retired = exported
+            .into_iter()
+            .find(|(id, _)| *id == from)
+            .map(|(_, e)| e.previous)
+            .unwrap_or_default();
+        retired.push(alias);
+        let policy = Arc::make_mut(&mut self.identities.policy);
+        if let Some(primary) = primary {
+            policy.primary.insert(target, primary);
+        }
+        if let Some(previous) = policy.retired.remove(&from) {
+            retired.extend(previous);
+        }
+        let previous = policy.retired.entry(target).or_default();
+        for alias in retired {
+            if !previous.contains(&alias) {
+                previous.push(alias);
+            }
+        }
+        let groups: Vec<_> = self
+            .variants()
+            .iter()
+            .filter(|g| self.variant_identity(g.id) == Some(from))
+            .map(|g| g.id)
+            .collect();
+        for group in groups {
+            self.assign_variant(group, target)?;
+        }
+        let owners: Vec<_> = self
+            .active_identities()
+            .into_iter()
+            .filter(|id| self.identity(*id).is_some_and(|i| i.owner == Some(from)))
+            .collect();
+        for id in owners {
+            self.set_owner(id, Some(target))?;
+        }
+        Ok(())
+    }
+    pub fn set_owner(&mut self, id: u64, owner: Option<u64>) -> Result<(), String> {
+        self.revision.advance();
+        let mut identity = self
+            .identity(id)
+            .ok_or("Identity is no longer available.")?
+            .clone();
+        if matches!(identity.category, Category::Person | Category::Organization) {
+            return Err("Assign ownership to a contact, address or identifier.".into());
+        }
+        if let Some(owner) = owner
+            && !self
+                .identity(owner)
+                .is_some_and(|i| matches!(i.category, Category::Person | Category::Organization))
+        {
+            return Err("Choose a person or organization as owner.".into());
+        }
+        identity.owner = owner;
+        Arc::make_mut(&mut self.identities.policy)
+            .edited
+            .insert(id, Arc::new(identity));
+        Ok(())
+    }
+    pub fn suggestions(&self, group: u64) -> Vec<u64> {
+        let Some(variant) = self.variant(group) else {
+            return Vec::new();
+        };
+        let current = self.variant_identity(group);
+        let mut ids: Vec<_> = self
+            .variants()
+            .iter()
+            .filter(|g| {
+                g.id != group
+                    && ((g.category == Category::Person
+                        && related_name(&g.original, &variant.original))
+                        || (g.category == Category::Person
+                            && variant.category == Category::Person
+                            && crate::propagation::People::form_of(&variant.original, &g.original))
+                        || (is_name(g.category)
+                            && is_name(variant.category)
+                            && contained_name(&g.original, &variant.original)))
+            })
+            .filter_map(|g| self.variant_identity(g.id))
+            .filter(|id| Some(*id) != current)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Detection, Recognizer};
+
+    #[test]
+    fn keys_and_name_words_keep_mains_normalization_outside_emphasis_and_ordinals() {
+        for value in [
+            "_jdoe",
+            "Smith[^2]",
+            "Lee<sup>1</sup>",
+            "Pellam<sup>Ltd</sup>",
+            "27 Wisp Lane<br>Norwich",
+            "Ann&#97; Petrova",
+            "И Н Н",
+            "Ма\u{ad}рина",
+            "Арте\u{308}м",
+            "Верес-\nтова Дарья Ильинична",
+            "Ms. O'Neil,",
+            "ООО «Ромашка»",
+        ] {
+            let main = crate::view::unwrapped(value);
+            let key = main
+                .replace(['«', '»', '“', '”'], "\"")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase();
+            assert_eq!(canonical(value), key, "{value}");
+            let words: Vec<_> = main
+                .split_whitespace()
+                .map(|w| w.trim_matches(|c: char| !c.is_alphabetic()).to_owned())
+                .filter(|w| !w.is_empty() && !TITLES.contains(&w.to_lowercase().as_str()))
+                .collect();
+            assert_eq!(name_words_cased(value), words, "{value}");
+        }
+        for (marked, plain) in [
+            ("Pellam* *Industries Inc", "Pellam Industries Inc"),
+            ("Flat 2<sup>nd</sup>", "Flat 2nd"),
+            ("Flat 2<sub>nd</sub>", "Flat 2nd"),
+        ] {
+            assert_eq!(canonical(marked), canonical(plain));
+            assert_eq!(name_words_cased(marked), name_words_cased(plain));
+            assert_ne!(
+                normalization_key(marked, Category::Email),
+                normalization_key(plain, Category::Email)
+            );
+            assert_ne!(
+                normalization_key(marked, Category::Url),
+                normalization_key(plain, Category::Url)
+            );
+        }
+        for (raw, decoded) in [
+            ("_jdoe", "jdoe"),
+            ("Smith[^2]", "Smith"),
+            ("27 Wisp Lane<br>Norwich", "27 Wisp Lane, Norwich"),
+        ] {
+            assert_ne!(canonical(raw), canonical(decoded));
+        }
+    }
+
+    #[test]
+    #[ignore = "20,000 identity policy history storage; excludes editor layout and source matching"]
+    fn identity_policy_history_shares_indices_and_prunes_states() {
+        let mut review = Review::default();
+        let mut source = String::new();
+        let mut detections = Vec::new();
+        for n in 0..20_000 {
+            let start = source.len();
+            source.push_str(&format!("Name{n:05}"));
+            detections.push(Detection {
+                range: start..source.len(),
+                category: Category::Person,
+                score: 0.9,
+                recognizer: Recognizer::Model,
+            });
+            source.push('\n');
+        }
+        review.ingest(&source, detections).unwrap();
+        assert_eq!(review.identities.definitions.len(), 20_000);
+        let policy = review.identity_snapshot();
+        for n in 1..=300u64 {
+            review
+                .identities
+                .on_transaction(&mdoc_history::EditorTransaction {
+                    revision: n,
+                    changes: vec![mdoc_history::HistoryChange {
+                        before: n - 1,
+                        after: n,
+                        edits: vec![mdoc_history::SourceEdit {
+                            range: source.len()..source.len(),
+                            new_len: 1,
+                        }],
+                    }],
+                    retained: (n.saturating_sub(255)..=n).collect(),
+                });
+        }
+        assert_eq!(review.identities.history.len(), 256);
+        assert!(
+            review
+                .identities
+                .history
+                .values()
+                .all(|state| Arc::ptr_eq(state, &policy))
+        );
+        let id = review.variants()[0].identity;
+        review.rename_identity(id, "CLIENT_1").unwrap();
+        assert!(!Arc::ptr_eq(&policy, &review.identity_snapshot()));
+        assert_eq!(review.identities.policy.edited.len(), 1);
+        assert!(
+            review
+                .identities
+                .definitions
+                .values()
+                .all(|value| Arc::strong_count(value) == 1)
+        );
+        assert_eq!(review.source.as_ref(), source);
+        eprintln!(
+            "IDENTITY_STORAGE identities=20000 retained_states=256 shared_policy_during_typing=true edited_overrides=1 immutable_definitions=20000 (excludes editor snapshots/layout, allocator and matcher costs)"
+        );
+    }
+
+    #[test]
+    fn surnames_follow_russian_name_order_and_skip_ambiguous_pairs() {
+        let surname = |name| split_full_name(name).map(|(surname, _)| surname);
+        assert_eq!(
+            surname("Павлова Марина Сергеевна").as_deref(),
+            Some("павлова")
+        );
+        assert_eq!(
+            surname("Марина Сергеевна Павлова").as_deref(),
+            Some("павлова")
+        );
+        assert_eq!(surname("Петров Иван").as_deref(), Some("петров"));
+        assert_eq!(surname("Иван Петров").as_deref(), Some("петров"));
+        assert_eq!(surname("Марина Павлова").as_deref(), Some("павлова"));
+        assert_eq!(surname("Ирина Пушкина"), None);
+        assert_eq!(surname("Ms Maya Bennett").as_deref(), Some("bennett"));
+        assert_eq!(surname("Павлова М.С."), None);
+        assert_eq!(surname("Bennett"), None);
+    }
+}

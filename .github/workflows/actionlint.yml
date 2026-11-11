@@ -1,0 +1,48 @@
+name: Actionlint
+
+# Lints the workflows and the setup action (expression typos, runner labels,
+# shellcheck on `run:` blocks) with the same pinned actionlint as `just
+# actionlint`.
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/**"
+      - "scripts/tools.env"
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    paths:
+      - ".github/**"
+      - "scripts/tools.env"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Replace superseded pushes and PR runs. Closing/merging a PR cancels its old
+# run through the same PR-number group, while the closed run skips every job.
+concurrency:
+  group: actionlint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint and just
+        run: |
+          scripts/install-actionlint.sh "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          grep -E '^[A-Z_]+=' scripts/tools.env >> "$GITHUB_ENV"
+
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: just@${{ env.JUST_VERSION }}
+
+      # ubuntu-latest ships shellcheck, which actionlint runs on `run:` blocks.
+      - run: just actionlint

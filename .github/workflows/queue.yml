@@ -1,0 +1,80 @@
+name: Queue
+
+# The full suite on a merge-queue commit (ADR 0095): the hosted macOS desktop
+# job, the iOS job, the detection gate and the CI machinery's script suites
+# (ADR 0100), each when the commit's areas need it. The PC posts ci/windows
+# and ci/android itself (scripts/queue-runner.sh), and merge-gate.sh
+# dispatches their hosted fallbacks. merge-gate reads every
+# result and posts the required `merge-gate` status; this workflow never
+# decides a merge.
+#
+# A push to a branch under ci-shadow/main/ runs it the same way: the shadow
+# trial's stand-in for queue commits before the merge queue is on.
+on:
+  merge_group:
+  push:
+    branches: ["ci-shadow/main/**"]
+
+permissions:
+  contents: read
+
+# A queue commit is tested once; a re-pushed shadow branch replaces its run.
+concurrency:
+  group: queue-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The jobs this commit needs, from what it brings onto main: the same diff
+  # and the same table merge-gate reads (scripts/ci-areas.sh --queue), so a
+  # job skipped here is one merge-gate does not wait for.
+  areas:
+    name: areas
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      jobs: ${{ steps.areas.outputs.jobs }}
+      macos: ${{ steps.areas.outputs.macos }}
+      ios: ${{ steps.areas.outputs.ios }}
+      detection: ${{ steps.areas.outputs.detection }}
+      scripts: ${{ steps.areas.outputs.scripts }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Main's history for the merge base; trees only, no file contents.
+          fetch-depth: 0
+          filter: blob:none
+
+      - id: areas
+        run: scripts/ci-areas.sh --queue | tee -a "$GITHUB_OUTPUT"
+
+  macos:
+    needs: areas
+    if: needs.areas.outputs.macos == 'true'
+    uses: ./.github/workflows/ci-desktop.yml
+    with:
+      os: macos
+
+  ios:
+    needs: areas
+    if: needs.areas.outputs.ios == 'true'
+    uses: ./.github/workflows/ci-ios.yml
+
+  # Four shards (ADR 0100): three ran 248-253 s of the 5-minute model
+  # budget each (84%, 2026-11-05), past the 80% at which a shard warns. With
+  # the desktop and iOS jobs that can be more macOS jobs than the account's
+  # five runners, so one may wait a few minutes; detection ends well before
+  # ci/macos either way.
+  detection:
+    needs: areas
+    if: needs.areas.outputs.detection == 'true'
+    uses: ./.github/workflows/ci-detection.yml
+    with:
+      shards: 4
+
+  # The ci area (ADR 0100): a change to only the CI machinery runs the script
+  # suites on Linux and under bash 3.2, not the desktop jobs.
+  scripts:
+    needs: areas
+    if: needs.areas.outputs.scripts == 'true'
+    uses: ./.github/workflows/ci-scripts.yml

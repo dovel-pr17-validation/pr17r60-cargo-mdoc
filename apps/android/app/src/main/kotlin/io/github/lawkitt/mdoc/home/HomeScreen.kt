@@ -1,0 +1,396 @@
+package io.github.lawkitt.mdoc.home
+
+import android.content.ClipDescription
+import android.content.ClipboardManager
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import io.github.lawkitt.mdoc.R
+import io.github.lawkitt.mdoc.core.CaseChoice
+import io.github.lawkitt.mdoc.core.CaseId
+import io.github.lawkitt.mdoc.core.CaseSummary
+import io.github.lawkitt.mdoc.core.DocumentId
+import io.github.lawkitt.mdoc.core.DocumentSummary
+import io.github.lawkitt.mdoc.ui.Palette
+
+/** The four ways in, in menu order: the camera last, furthest from the button (ADR 0088). */
+enum class AddOption { Paste, Files, Photos, Scan }
+
+/**
+ * Home: a flat list of documents, newest first, each with its case's dot and
+ * a status line (ADR 0087), or how to add the first one. A library that could
+ * not be opened says so rather than looking empty.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HomeScreen(
+    state: HomeState,
+    onOpen: (DocumentId) -> Unit,
+    onAdd: (AddOption) -> Unit,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+    setupCard: (@Composable () -> Unit)? = null,
+    onSettings: () -> Unit = {},
+    onDelete: (DocumentId) -> Unit = {},
+) {
+    var menu by rememberSaveable { mutableStateOf(false) }
+    Scaffold(
+        modifier = modifier,
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.app_name)) },
+                actions = {
+                    IconButton(onSettings) { Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.settings)) }
+                },
+            )
+        },
+        floatingActionButton = {
+            Box {
+                val addLabel = stringResource(R.string.add)
+                ExtendedFloatingActionButton(
+                    onClick = { menu = true },
+                    // The button's own label: its text alone does not reach TalkBack.
+                    modifier = Modifier.semantics { contentDescription = addLabel },
+                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                    text = { Text(stringResource(R.string.add)) },
+                )
+                // Opens upward from the button: Scan, the camera, ends furthest away.
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    AddOption.entries.reversed().forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(stringResource(option.label)) },
+                            leadingIcon = { Icon(painterResource(option.icon), contentDescription = null) },
+                            onClick = {
+                                menu = false
+                                onAdd(option)
+                            },
+                        )
+                    }
+                }
+            }
+        },
+    ) { padding ->
+        // A tablet keeps the list to a readable width, centred.
+        val inner = Modifier.padding(padding).fillMaxWidth().wrapContentWidth().widthIn(max = 720.dp)
+        when {
+            state.error != null -> CoreFailed(state.error, onRetry, inner)
+            !state.loaded -> Box(inner.fillMaxSize())
+            // Scrolls, so the setup card's buttons stay reachable on a short screen or at large text.
+            state.documents.isEmpty() -> Column(inner.verticalScroll(rememberScrollState())) {
+                setupCard?.let { Box(Modifier.padding(16.dp)) { it() } }
+                EmptyHome(state.canFindNames, Modifier.heightIn(min = 320.dp))
+            }
+            else -> LazyColumn(inner) {
+                setupCard?.let { card -> item(key = "setup") { Box(Modifier.padding(16.dp)) { card() } } }
+                items(state.documents, key = { it.id.raw }) { document ->
+                    DocumentRow(
+                        document,
+                        state.cases.firstOrNull { it.id == document.caseId },
+                        state.canFindNames,
+                        onDelete = { onDelete(document.id) },
+                    ) {
+                        onOpen(document.id)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** iOS's symbols for the same four (ADR 0087), as Material Symbols. */
+private val AddOption.icon: Int
+    get() = when (this) {
+        AddOption.Paste -> R.drawable.ic_content_paste
+        AddOption.Files -> R.drawable.ic_folder_open
+        AddOption.Photos -> R.drawable.ic_photo_library
+        AddOption.Scan -> R.drawable.ic_document_scanner
+    }
+
+private val AddOption.label: Int
+    get() = when (this) {
+        AddOption.Paste -> R.string.paste
+        AddOption.Files -> R.string.files
+        AddOption.Photos -> R.string.photos
+        AddOption.Scan -> R.string.scan
+    }
+
+@Composable
+private fun DocumentRow(
+    document: DocumentSummary,
+    case: CaseSummary?,
+    canFindNames: Boolean,
+    onDelete: () -> Unit,
+    onClick: () -> Unit,
+) {
+    // A long press offers Delete (iOS's swipe); TalkBack has it as an action.
+    var actions by remember { mutableStateOf(false) }
+    val deleteLabel = stringResource(R.string.delete)
+    val line = HomeViewModel.status(document, canFindNames)
+    val status = when (line) {
+        StatusLine.NotRecognized -> stringResource(R.string.status_not_recognized)
+        StatusLine.ImportNotFinished -> stringResource(R.string.status_import_not_finished)
+        StatusLine.ReadyToFind -> stringResource(R.string.status_ready_to_find)
+        StatusLine.ReadyToMark -> stringResource(R.string.status_ready_to_mark)
+        is StatusLine.ToReview -> stringResource(R.string.status_to_review, line.count)
+        StatusLine.ReadyToShare -> stringResource(R.string.status_ready_to_share)
+        StatusLine.NothingFound -> stringResource(R.string.status_nothing_found)
+    }
+    // The status as a symbol and words (ADR 0087), never a colour of its own:
+    // the case's dot is the row's one colour. Something to review reads strongest.
+    val toReview = line is StatusLine.ToReview
+    val tone = if (toReview) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+    // The case's name only when it differs from the title.
+    val caseName = case?.name?.takeIf { it != document.title }
+    Box {
+        ListItem(
+            modifier = Modifier
+                .combinedClickable(onClick = onClick, onLongClick = { actions = true }, onLongClickLabel = deleteLabel)
+                .semantics { customActions = listOf(CustomAccessibilityAction(deleteLabel) { onDelete(); true }) },
+            leadingContent = case?.let {
+                {
+                    Box(Modifier.size(10.dp).background(Color(Palette.case(it.colour)), CircleShape))
+                }
+            },
+            headlineContent = { Text(document.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+            supportingContent = {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    caseName?.let { Text(stringResource(R.string.case_named, it), maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(statusIcon(line), contentDescription = null, tint = tone, modifier = Modifier.size(16.dp))
+                        Text(status, color = tone, fontWeight = if (toReview) FontWeight.SemiBold else null)
+                    }
+                }
+            },
+        )
+        DropdownMenu(expanded = actions, onDismissRequest = { actions = false }) {
+            DropdownMenuItem(
+                text = { Text(deleteLabel) },
+                onClick = {
+                    actions = false
+                    onDelete()
+                },
+            )
+        }
+    }
+}
+
+/** iOS's status symbols, in Material's core set. */
+private fun statusIcon(line: StatusLine): ImageVector = when (line) {
+    StatusLine.ImportNotFinished -> Icons.Outlined.Refresh
+    StatusLine.NotRecognized -> Icons.Outlined.Search
+    StatusLine.ReadyToFind -> Icons.Outlined.Person
+    StatusLine.ReadyToMark -> Icons.Outlined.Edit
+    is StatusLine.ToReview -> Icons.Outlined.Info
+    StatusLine.ReadyToShare, StatusLine.NothingFound -> Icons.Outlined.CheckCircle
+}
+
+@Composable
+private fun CoreFailed(error: String, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(stringResource(R.string.core_failed), style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
+        Text(error, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        Button(onClick = onRetry) { Text(stringResource(R.string.try_again)) }
+    }
+}
+
+@Composable
+private fun EmptyHome(canFindNames: Boolean, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier.fillMaxWidth().padding(32.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            painterResource(R.drawable.ic_find_in_page),
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(48.dp),
+        )
+        Text(stringResource(R.string.home_empty_title), style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
+        Text(
+            stringResource(if (canFindNames) R.string.home_empty_body else R.string.home_empty_body_below_floor),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+/**
+ * Adding a document: pasted text, a title and a case in one sheet (ADR 0087);
+ * a new case unless an existing one is chosen (ADR 0085).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddSheet(
+    adding: PendingAdd,
+    cases: List<CaseSummary>,
+    onAdd: (text: String?, title: String, case: CaseChoice) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val pasting = adding is PendingAdd.Text
+    var text by rememberSaveable { mutableStateOf("") }
+    var title by rememberSaveable { mutableStateOf(adding.suggestedTitle) }
+    // Until the title is typed, it follows the pasted text's first line (as on iOS).
+    var titleTyped by rememberSaveable { mutableStateOf(false) }
+    val fallback = stringResource(R.string.pasted_text)
+    fun setText(value: String) {
+        text = value
+        if (pasting && !titleTyped) title = HomeViewModel.suggestedTitle(value, fallback)
+    }
+    var case by rememberSaveable { mutableStateOf<String?>(null) }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(24.dp, 0.dp, 24.dp, 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                stringResource(if (pasting) R.string.paste_text else R.string.add_document),
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.semantics { heading() },
+            )
+            if (pasting) {
+                PasteFromClipboard(onPaste = ::setText)
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = ::setText,
+                    label = { Text(stringResource(R.string.paste_placeholder)) },
+                    modifier = Modifier.fillMaxWidth().height(200.dp),
+                )
+            }
+            OutlinedTextField(
+                value = title,
+                onValueChange = {
+                    title = it
+                    titleTyped = true
+                },
+                label = { Text(stringResource(R.string.title)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(stringResource(R.string.case_label), style = MaterialTheme.typography.titleSmall)
+            CaseOption(stringResource(R.string.new_case), null, case == null) { case = null }
+            cases.forEach { option -> CaseOption(option.name, option, case == option.id.raw) { case = option.id.raw } }
+            Text(
+                stringResource(R.string.case_explanation),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(
+                onClick = {
+                    val name = title.trim().ifEmpty { adding.suggestedTitle }
+                    onAdd(if (pasting) text else null, name, case?.let { CaseChoice.Existing(CaseId(it)) } ?: CaseChoice.New(name))
+                },
+                enabled = !pasting || text.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(stringResource(R.string.add)) }
+        }
+    }
+}
+
+@Composable
+private fun CaseOption(label: String, case: CaseSummary?, selected: Boolean, onClick: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+        RadioButton(selected = selected, onClick = onClick)
+        case?.let { Box(Modifier.size(10.dp).background(Color(Palette.case(it.colour)), CircleShape)) }
+        Text(label, modifier = Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodyLarge)
+    }
+}
+
+/**
+ * iOS's paste button: the clipboard's text into the field in one tap.
+ * Offered only while the clipboard holds text; its description is read
+ * without reading the text, so Android shows no paste notice until the tap.
+ */
+@Composable
+fun PasteFromClipboard(onPaste: (String) -> Unit) {
+    val context = LocalContext.current
+    val clipboard = remember { context.getSystemService(ClipboardManager::class.java) }
+    fun holdsText() = clipboard.primaryClipDescription?.let {
+        it.hasMimeType(ClipDescription.MIMETYPE_TEXT_PLAIN) || it.hasMimeType(ClipDescription.MIMETYPE_TEXT_HTML)
+    } == true
+    var hasText by remember { mutableStateOf(holdsText()) }
+    // Text copied while the sheet is open turns the button on.
+    DisposableEffect(clipboard) {
+        val listener = ClipboardManager.OnPrimaryClipChangedListener { hasText = holdsText() }
+        clipboard.addPrimaryClipChangedListener(listener)
+        onDispose { clipboard.removePrimaryClipChangedListener(listener) }
+    }
+    FilledTonalButton(
+        onClick = { clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.let(onPaste) },
+        enabled = hasText,
+    ) {
+        Icon(painterResource(R.drawable.ic_content_paste), contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(stringResource(R.string.paste))
+    }
+}

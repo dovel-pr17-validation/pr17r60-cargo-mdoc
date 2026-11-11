@@ -1,0 +1,271 @@
+[package]
+name = "mdoc"
+version = "0.3.0"
+edition = "2024"
+description = "Prepare legal documents for AI on your own computer."
+license = "GPL-3.0-or-later"
+authors = ["lawkitt", "packetThrower"]
+repository = "https://github.com/lawkitt/mdoc"
+publish = false
+
+[workspace]
+# Upstream code with one Linux glyph-offset correction; not a workspace crate.
+exclude = ["vendor"]
+members = ["crates/gpui-bidi", "crates/mdoc-editor", "crates/mdoc-history", "crates/mdoc-markdown", "crates/mdoc-pii", "crates/gpui-pdf", "crates/mdoc-spell", "crates/mdoc-store", "crates/mdoc-import", "crates/mdoc-detect", "crates/mdoc-ffi"]
+resolver = "2"
+
+# Module dependencies stay visible (ADR 0069): every workspace crate denies
+# glob imports; `use super::*` in test modules stays allowed.
+[workspace.lints.clippy]
+wildcard_imports = "deny"
+
+[features]
+# The entry point and runner are additionally gated by debug_assertions.
+headless-renders = ["mdoc-store/headless-renders", "gpui/test-support", "gpui_platform/test-support", "gpui_windows/test-support"]
+
+# Remove when an adopted GPUI release includes the combining-mark correction.
+# Preserve the current GPUI family; see vendor/gpui-pre-wgpu/ZORITE-PATCH.md.
+[patch.crates-io]
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
+# Save dialog reasons, on macOS the quit question, and on Windows the
+# test-only WARP adapter; see each MDOC-PATCH.md.
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+
+[workspace.dependencies]
+gpui = { package = "gpui-pre", version = "0.3" }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3", features = ["font-kit", "wayland", "x11", "runtime_shaders"] }
+
+[dependencies]
+regex = "1"
+pdf-inspector = { git = "https://github.com/lawkitt/pdf-inspector.git", rev = "dd94189df44a979c009192a5abda049d06580981", features = ["ocr"] }
+# App data lives under data_local_dir / cache_dir (settings, session, cases,
+# models, updates, crash report); a bump must keep those paths (ADR 0053).
+dirs = "7"
+sha2 = "0.11"
+ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier"] }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Update check (src/updater.rs, ADR 0038): release tags compared by SemVer.
+semver = "1"
+# canonicalize without Windows verbatim (`\\?\`) prefixes in user-visible paths.
+dunce = "1"
+# Local wall-clock times of decisions in What you did (ADR 0079).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+gpui = { workspace = true }
+gpui_platform = { workspace = true }
+mdoc-editor = { path = "crates/mdoc-editor" }
+# Shelf previews hide Markdown syntax (src/shelf.rs, ADR 0084).
+mdoc-markdown = { path = "crates/mdoc-markdown" }
+mdoc-pii = { path = "crates/mdoc-pii" }
+mdoc-spell = { path = "crates/mdoc-spell" }
+mdoc-store = { path = "crates/mdoc-store" }
+mdoc-import = { path = "crates/mdoc-import" }
+mdoc-detect = { path = "crates/mdoc-detect" }
+gpui-pdf = { path = "crates/gpui-pdf" }
+tempfile = "3"
+url = "2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+unicode-segmentation = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The save dialog's reason (src/save_prompt.rs), the quit question
+# (src/system_quit.rs) and the menu bar shelf (src/menu_bar.rs).
+gpui_macos = { package = "gpui-pre-macos", version = "=0.3.2" }
+
+[target.'cfg(windows)'.dependencies]
+# The save dialog's reason (src/save_prompt.rs) and the headless renderer.
+gpui_windows = { package = "gpui-pre-windows", version = "=0.3.2" }
+# Single-instance launch (src/single_instance.rs) uses the pipe, session and
+# foreground features.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+embed-resource = "3"
+
+[lints]
+workspace = true
+
+# Lean debug information (ADR 0050): workspace crates keep line tables, so
+# backtraces still show file and line; dependencies keep none. The test profile
+# inherits this. For a debugger, build with `--profile debugging`.
+# split-debuginfo stays at the platform default: on macOS, "packed" stops object
+# files accumulating but costs ~2.6 s per warm rebuild.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = 0
+
+# GPUI's element tree, layout and paint (taffy): half of the Windows render
+# test's time and most of the other GUI tests' (ADR 0082, #240).
+[profile.dev.package.gpui-pre]
+opt-level = 2
+[profile.dev.package.taffy]
+opt-level = 2
+# Headless evidence spends most of its time in BGRA readback conversion and
+# PNG encoding. Level 2 keeps these loops from reusing unoptimized generic
+# helpers. Keep app/editor code at 0.
+[profile.dev.package.gpui-pre-windows]
+opt-level = 2
+[profile.dev.package.png]
+opt-level = 2
+[profile.dev.package.simd-adler32]
+opt-level = 2
+# The macOS path: Metal texture readback, the image crate's buffer copies and
+# channel swaps, and fdeflate's PNG compression (ADR 0082).
+[profile.dev.package.gpui-pre-apple]
+opt-level = 2
+[profile.dev.package.image]
+opt-level = 2
+[profile.dev.package.fdeflate]
+opt-level = 2
+
+# Full debug information for lldb/CodeLLDB, in its own target/debugging/.
+[profile.debugging]
+inherits = "dev"
+debug = "full"
+split-debuginfo = "packed"
+
+[profile.debugging.package."*"]
+debug = "full"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true
+
+# The iOS core (scripts/build-ios-core.sh): release, but unwinding so UniFFI
+# turns a panic into an error instead of ending the app, and unstripped so
+# Xcode's own strip keeps the symbols the app exports (ADR 0085).
+[profile.mobile]
+inherits = "release"
+panic = "unwind"
+strip = false
+
+[package.metadata.packager]
+# Never set appdata-paths: the NSIS uninstaller would delete the case key at
+# %LOCALAPPDATA%\mdoc\cases\key.dpapi, making saved cases unreadable.
+product-name = "mdoc"
+identifier = "io.github.lawkitt.mdoc"
+category = "Productivity"
+copyright = "© 2026 packetThrower / Zorite contributors; © 2026 lawkitt / mdoc contributors"
+homepage = "https://github.com/lawkitt/mdoc"
+authors = ["lawkitt", "packetThrower"]
+publisher = "lawkitt"
+description = "Prepare legal documents for AI on your own computer."
+long-description = "Convert PDF, scans and Word documents to Markdown and pseudonymize client details before you paste them into an AI tool."
+before-packaging-command = "cargo build --release"
+icons = ["resources/icons/icon.icns", "resources/icons/icon.png", "resources/icons/icon.ico"]
+
+[package.metadata.packager.nsis]
+# The template inserts this text between its sections, so it also carries the
+# "Open with" registration and its uninstall section.
+# ONNX Runtime (OCR, pseudonymization) needs the x64 VC++ Redistributable
+# despite mdoc.exe's static CRT. Install it, with its own UAC prompt, only when
+# missing; scripts/package.sh supplies the signature-checked installer through
+# MDOC_VC_REDIST at compile time (ADR 0037). Failure doesn't stop the install:
+# the app explains how to get the runtime when OCR is first used.
+preinstall-section = '''
+Section VCRedist
+  SetRegView 64
+  ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" "Installed"
+  ${If} $0 != 1
+    InitPluginsDir
+    File "/oname=$PLUGINSDIR\vc_redist.x64.exe" "$%MDOC_VC_REDIST%"
+    ExecWait '"$PLUGINSDIR\vc_redist.x64.exe" /install /passive /norestart' $1
+    ${If} $1 != 0
+    ${AndIf} $1 != 1638
+    ${AndIf} $1 != 3010
+    ${AndIfNot} ${Silent}
+      MessageBox MB_ICONEXCLAMATION|MB_OK "The Microsoft Visual C++ Redistributable could not be installed (code $1). mdoc will run, but text recognition and pseudonymization need it; mdoc explains how to install it when they are first used."
+    ${EndIf}
+  ${EndIf}
+SectionEnd
+
+; "Open with" for the types mdoc opens (as resources/Info.plist on macOS),
+; never the default app: a ProgID listed under each extension's
+; OpenWithProgids, plus Applications\mdoc.exe. The uninstall section below
+; removes exactly these keys and values.
+!define MDOC_PROGID "io.github.lawkitt.mdoc.document"
+!macro MdocOpenWith EXT
+  WriteRegStr SHCTX "Software\Classes\.${EXT}\OpenWithProgids" "${MDOC_PROGID}" ""
+  WriteRegStr SHCTX "Software\Classes\Applications\${MAINBINARYNAME}.exe\SupportedTypes" ".${EXT}" ""
+!macroend
+!macro MdocRemoveOpenWith EXT
+  DeleteRegValue SHCTX "Software\Classes\.${EXT}\OpenWithProgids" "${MDOC_PROGID}"
+  DeleteRegKey /ifempty SHCTX "Software\Classes\.${EXT}\OpenWithProgids"
+!macroend
+
+Section OpenWith
+  WriteRegStr SHCTX "Software\Classes\${MDOC_PROGID}" "" "mdoc document"
+  WriteRegStr SHCTX "Software\Classes\${MDOC_PROGID}\DefaultIcon" "" '"$INSTDIR\${MAINBINARYNAME}.exe",0'
+  WriteRegStr SHCTX "Software\Classes\${MDOC_PROGID}\shell\open\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
+  WriteRegStr SHCTX "Software\Classes\Applications\${MAINBINARYNAME}.exe" "FriendlyAppName" "mdoc"
+  WriteRegStr SHCTX "Software\Classes\Applications\${MAINBINARYNAME}.exe\shell\open\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
+  !insertmacro MdocOpenWith "md"
+  !insertmacro MdocOpenWith "markdown"
+  !insertmacro MdocOpenWith "mdown"
+  !insertmacro MdocOpenWith "txt"
+  !insertmacro MdocOpenWith "pdf"
+  !insertmacro MdocOpenWith "docx"
+  !insertmacro UPDATEFILEASSOC
+SectionEnd
+
+Section un.OpenWith
+  !insertmacro MdocRemoveOpenWith "md"
+  !insertmacro MdocRemoveOpenWith "markdown"
+  !insertmacro MdocRemoveOpenWith "mdown"
+  !insertmacro MdocRemoveOpenWith "txt"
+  !insertmacro MdocRemoveOpenWith "pdf"
+  !insertmacro MdocRemoveOpenWith "docx"
+  DeleteRegKey SHCTX "Software\Classes\${MDOC_PROGID}"
+  DeleteRegKey SHCTX "Software\Classes\Applications\${MAINBINARYNAME}.exe"
+  !insertmacro UPDATEFILEASSOC
+SectionEnd
+'''
+
+[package.metadata.packager.macos]
+# Hand-curated Info.plist (single-instance launch, high-DPI, stable bundle id).
+info-plist-path = "resources/Info.plist"
+minimum-system-version = "11.0"
+# Ad-hoc signature (`-`) with the hardened runtime. Release builds are re-signed
+# with the Developer ID and notarized by scripts/macos-sign.sh (ADR 0039).
+signing-identity = "-"
+# Lets the hardened runtime load the downloaded PDFium and ONNX Runtime
+# libraries (see the plist); scripts/package.sh checks it is applied.
+entitlements = "resources/entitlements.plist"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+# Tests never ask the OS for the build's signature or the case key: those
+# calls panic (development.md, Tests and OS services; ADR 0095).
+mdoc-store = { path = "crates/mdoc-store", features = ["deny-os-services"] }
+# tests/docx_worker.rs inspects the worker's DOCX package.
+roxmltree = "0.21"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+# PDF rasterization is CPU-heavy. Keep application/editor code debuggable while
+# avoiding unoptimized pixel/vector loops during `cargo run` and tests.
+[profile.dev.package.gpui-pdf]
+opt-level = 2
+[profile.dev.package.hayro]
+opt-level = 2
+[profile.dev.package.hayro-interpret]
+opt-level = 2
+[profile.dev.package.vello_cpu]
+opt-level = 2
+[profile.dev.package.vello_common]
+opt-level = 2

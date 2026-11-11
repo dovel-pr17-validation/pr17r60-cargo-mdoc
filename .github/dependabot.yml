@@ -1,0 +1,69 @@
+version: 2
+
+# Dependency-update schedule for the two ecosystems mdoc uses: the Cargo
+# workspace at the repo root (the app crate plus the crates/* members, all
+# resolved through the root Cargo.lock) and the GitHub
+# Actions in the workflows. Paths are explicit so renaming a directory surfaces
+# as a Dependabot error instead of silently dropping coverage.
+#
+# The evaluation tooling under tools/pseudonymization/ (three lockfiles outside
+# the workspace) is left out on purpose: security alerts still cover it, and
+# its locks are bumped by hand when an alert or a run needs it.
+
+updates:
+  # The app + its workspace crates. The root Cargo.toml / Cargo.lock are the
+  # source of truth for every native dep (gpui, gpui-component, rusqlite, hayro,
+  # …); Dependabot updates every workspace member from here.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    # Cargo accepts only `auto` or `lockfile-only` here, so a bump the manifest
+    # does not allow can still arrive as a lockfile-only PR: `just lint` runs
+    # `cargo metadata --locked` and fails it (ADR 0053).
+    # gpui pins these internally (resvg via gpui itself, sha2 via its
+    # http_client); bumping our copy past gpui's compiles TWO versions into
+    # the binary. They move only in lockstep with a gpui upgrade — and the
+    # gpui family itself (the `gpui-pre` crates, weekly zed snapshots) plus
+    # GPUI Kit's crates are exact-pinned and moved together by hand (see the
+    # gpui comment in Cargo.toml), so Dependabot must not bump them singly.
+    ignore:
+      - dependency-name: "resvg"
+      - dependency-name: "sha2"
+      - dependency-name: "gpui-pre"
+      - dependency-name: "gpui-pre-platform"
+      - dependency-name: "gpui-component"
+      - dependency-name: "gpui-kit-assets"
+      - dependency-name: "gpui-fps"
+      # Exact-pinned: preview rendering changes between releases (ADR 0053).
+      - dependency-name: "docxide-pdf"
+    groups:
+      # One PR for the routine patch/minor sweep instead of a dozen; majors
+      # still come through individually so they get a proper look.
+      cargo-minor:
+        update-types: ["minor", "patch"]
+
+  # The Android app's Gradle dependencies (ADR 0089). Gradle checks every
+  # artifact against apps/android/gradle/verification-metadata.xml, which
+  # Dependabot does not update: regenerate it on the PR before merging (see
+  # apps/android/README.md).
+  - package-ecosystem: "gradle"
+    directory: "/apps/android"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # GitHub Actions in .github/workflows/ and .github/actions/. The workflows pin every action to a
+  # full commit SHA; Dependabot understands SHA pins (it bumps the SHA and the
+  # trailing `# vX.Y.Z` comment together), so this is what keeps the pins from
+  # going stale.
+  - package-ecosystem: "github-actions"
+    # "/" covers .github/workflows; the local composite action is listed
+    # separately.
+    directories: ["/", "/.github/actions/setup"]
+    schedule:
+      interval: "weekly"
+    groups:
+      actions-all:
+        patterns: ["*"]

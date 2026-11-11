@@ -1,0 +1,1854 @@
+//! Saved cases (ADR 0041): a named replacement mapping its documents share,
+//! stored as one AES-256-GCM file per case in app data. The key is held by the
+//! OS (macOS Keychain, Windows data protection); there is no plaintext
+//! fallback. Originals never reach the session manifest.
+use crate::lists::Lists;
+use aes_gcm::{
+    Aes256Gcm, KeyInit,
+    aead::{Aead, Generate, Nonce, Payload},
+};
+use mdoc_pii::{Category, restore::ExportedIdentity};
+use serde::{Deserialize, Serialize};
+use std::{
+    io::{self, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+#[derive(Debug, thiserror::Error)]
+pub enum CaseError {
+    /// The user declined the macOS Keychain dialog (ADR 0043).
+    #[error("Saved cases need Keychain access.")]
+    KeyDenied,
+    /// A Keychain call failed; the OS error, as macOS words it.
+    #[error("Could not read the case key from the Keychain: {0}")]
+    KeychainRead(String),
+    #[error("Could not store the case key in the Keychain: {0}")]
+    KeychainStore(String),
+    #[error("The case key in the Keychain is damaged.")]
+    KeychainDamaged,
+    /// Windows: the DPAPI-sealed key file.
+    #[error("Could not read the case key: {0}")]
+    KeyRead(io::Error),
+    #[error("Could not store the case key: {0}")]
+    KeyWrite(io::Error),
+    #[error("The case key is damaged.")]
+    KeyDamaged,
+    #[error("Windows data protection could not open the case key.")]
+    DataProtection,
+    /// Linux: no usable Secret Service; its error, as the service words it.
+    #[error(
+        "Saved cases need a Secret Service keyring (GNOME Keyring or KWallet), which is not available: {0}"
+    )]
+    KeyringUnavailable(String),
+    #[error("Could not store the case key in the keyring: {0}")]
+    KeyringStore(String),
+    #[error("The case key in the keyring is damaged.")]
+    KeyringDamaged,
+    #[error(
+        "Saved cases need the macOS Keychain, Windows data protection or a Secret Service keyring, so they are not available on this system."
+    )]
+    NoKeyStore,
+    #[error("OS case keys are disabled in headless renders")]
+    KeysDisabled,
+    #[error("No folder for app data on this system.")]
+    NoAppData,
+    #[error("Invalid case id.")]
+    InvalidId,
+    #[error("Could not read the case: {0}")]
+    Read(io::Error),
+    #[error("The case file is not a case or is damaged.")]
+    NotACase,
+    #[error("The case file is damaged or was saved with a different key.")]
+    WrongKey,
+    #[error("The case file is damaged.")]
+    Damaged,
+}
+
+/// File header: magic and format version, also authenticated with the case id.
+const MAGIC: &[u8; 9] = b"MDOCCASE1";
+const NONCE: usize = 12;
+/// The user-wide lists' file in the cases folder, and its header (also its
+/// authenticated data). Not a `.case`, so listing and counting cases skip it.
+const LISTS_FILE: &str = "user.lists";
+const LISTS_MAGIC: &[u8; 9] = b"MDOCLIST1";
+/// Cases are small; anything larger is not one of ours.
+const MAX_FILE: u64 = 64 * 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StoredIdentity {
+    pub alias: String,
+    #[serde(default)]
+    pub previous: Vec<String>,
+    /// The category token, e.g. `PERSON`.
+    pub category: String,
+    #[serde(default)]
+    pub custom: bool,
+    /// The primary wording first.
+    pub originals: Vec<String>,
+}
+impl StoredIdentity {
+    fn from_exported(e: &ExportedIdentity) -> Self {
+        Self {
+            alias: e.alias.clone(),
+            previous: e.previous.clone(),
+            category: e.category.token().into(),
+            custom: e.custom,
+            originals: e.originals.iter().map(|o| o.to_string()).collect(),
+        }
+    }
+    fn exported(&self) -> Option<ExportedIdentity> {
+        let category = *Category::ALL.iter().find(|c| c.token() == self.category)?;
+        (!self.originals.is_empty()).then(|| ExportedIdentity {
+            alias: self.alias.clone(),
+            previous: self.previous.clone(),
+            category,
+            custom: self.custom,
+            originals: self
+                .originals
+                .iter()
+                .map(|o| Arc::from(o.as_str()))
+                .collect(),
+        })
+    }
+    pub fn names(&self, alias: &str) -> bool {
+        self.alias == alias || self.previous.iter().any(|p| p == alias)
+    }
+}
+
+/// The eight case swatches (ADR 0077), in hue order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CaseColor {
+    Red,
+    Orange,
+    Amber,
+    Green,
+    Teal,
+    Blue,
+    Violet,
+    Pink,
+}
+
+impl CaseColor {
+    pub const ALL: [Self; 8] = [
+        Self::Red,
+        Self::Orange,
+        Self::Amber,
+        Self::Green,
+        Self::Teal,
+        Self::Blue,
+        Self::Violet,
+        Self::Pink,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Red => "Red",
+            Self::Orange => "Orange",
+            Self::Amber => "Amber",
+            Self::Green => "Green",
+            Self::Teal => "Teal",
+            Self::Blue => "Blue",
+            Self::Violet => "Violet",
+            Self::Pink => "Pink",
+        }
+    }
+
+    pub fn hue(self) -> u32 {
+        match self {
+            Self::Red => 0,
+            Self::Orange => 30,
+            Self::Amber => 45,
+            Self::Green => 120,
+            Self::Teal => 175,
+            Self::Blue => 220,
+            Self::Violet => 270,
+            Self::Pink => 325,
+        }
+    }
+
+    pub fn for_id(id: &str) -> Self {
+        let hue = u32::from_str_radix(id.get(..6).unwrap_or(""), 16).unwrap_or(0) % 360;
+        Self::ALL
+            .into_iter()
+            .min_by_key(|color| {
+                let distance = hue.abs_diff(color.hue());
+                distance.min(360 - distance)
+            })
+            .unwrap()
+    }
+}
+
+/// Non-secret metadata available while cases are locked. No member paths or names.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaseSummary {
+    pub id: String,
+    pub name: String,
+    pub documents: usize,
+    #[serde(default)]
+    pub color: Option<CaseColor>,
+}
+
+impl CaseSummary {
+    pub fn of(case: &Case) -> Self {
+        Self {
+            id: case.id.clone(),
+            name: case.name.clone(),
+            documents: case.members.len(),
+            color: case.color,
+        }
+    }
+    pub fn link(&self) -> CaseLink {
+        CaseLink {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            color: self.color,
+        }
+    }
+}
+
+/// A document's membership in a case, as the tab shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaseLink {
+    pub id: String,
+    pub name: String,
+    pub color: Option<CaseColor>,
+}
+impl CaseLink {
+    pub fn of(case: &Case) -> Self {
+        Self {
+            id: case.id.clone(),
+            name: case.name.clone(),
+            color: case.color,
+        }
+    }
+    /// A stable hue in degrees (0..360) for the case's sidebar dot.
+    pub fn hue(&self) -> u32 {
+        self.color
+            .unwrap_or_else(|| CaseColor::for_id(&self.id))
+            .hue()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Case {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub color: Option<CaseColor>,
+    /// Seconds since the Unix epoch.
+    pub created: u64,
+    pub identities: Vec<StoredIdentity>,
+    /// Member Markdown files, as session identities.
+    #[serde(default)]
+    pub members: Vec<PathBuf>,
+    /// Bumped on every change; a store never writes an older revision.
+    #[serde(default)]
+    pub revision: u64,
+    /// Category tokens scans in member documents skip.
+    #[serde(default)]
+    pub skip: Vec<String>,
+    /// Each member's AI reply as pasted, aliases and all (ADR 0078).
+    #[serde(default)]
+    pub replies: Vec<CaseReply>,
+    /// Dismissed merge hints, as the identities’ primary wordings (shorter, fuller)
+    /// (ADR 0080).
+    #[serde(default)]
+    pub dismissed_hints: Vec<(String, String)>,
+    /// Each member's fingerprint of the text it saved while ready: a closed
+    /// member is ready on the shelf only while its file matches (ADR 0084).
+    #[serde(default)]
+    pub reviewed: Vec<ReviewedMember>,
+    /// The case's Always and Never lists, from its members' manual marks
+    /// and Keeps (ADR 0092).
+    #[serde(default)]
+    pub lists: Lists,
+}
+
+/// The user-wide Always and Never lists as stored (ADR 0092).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UserLists {
+    /// Bumped on every change; a store never writes an older revision.
+    pub revision: u64,
+    pub lists: Lists,
+}
+
+/// A member's text as last saved while ready (ADR 0084): a fingerprint of
+/// the text, never the text.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReviewedMember {
+    /// The member, as in [`Case::members`].
+    pub member: PathBuf,
+    /// The SHA-256 of the saved text, in hex.
+    pub fingerprint: String,
+}
+
+/// One member document's AI reply, kept for its Reply view (ADR 0078).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CaseReply {
+    /// The member, as in [`Case::members`].
+    pub member: PathBuf,
+    pub text: String,
+}
+impl Case {
+    pub fn new(name: String, identities: &[ExportedIdentity], member: Option<PathBuf>) -> Self {
+        let id = <[u8; 16]>::generate();
+        let mut case = Self {
+            id: id.iter().map(|b| format!("{b:02x}")).collect(),
+            name,
+            color: None,
+            created: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+            identities: Vec::new(),
+            members: member.into_iter().collect(),
+            revision: 0,
+            skip: Vec::new(),
+            replies: Vec::new(),
+            dismissed_hints: Vec::new(),
+            reviewed: Vec::new(),
+            lists: Lists::default(),
+        };
+        case.merge(identities);
+        case
+    }
+    /// The AI reply kept for `member`.
+    pub fn reply(&self, member: &Path) -> Option<&str> {
+        self.replies
+            .iter()
+            .find(|r| r.member == member)
+            .map(|r| r.text.as_str())
+    }
+    /// Keep `text` as `member`'s reply, or remove it with `None`. Returns
+    /// whether the case changed.
+    pub fn set_reply(&mut self, member: &Path, text: Option<String>) -> bool {
+        let at = self.replies.iter().position(|r| r.member == member);
+        match (at, text) {
+            (Some(at), None) => {
+                self.replies.remove(at);
+                true
+            }
+            (Some(at), Some(text)) if self.replies[at].text != text => {
+                self.replies[at].text = text;
+                true
+            }
+            (None, Some(text)) => {
+                self.replies.push(CaseReply {
+                    member: member.to_path_buf(),
+                    text,
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+    /// The fingerprint `member` saved while ready (ADR 0084).
+    pub fn reviewed(&self, member: &Path) -> Option<&str> {
+        self.reviewed
+            .iter()
+            .find(|r| r.member == member)
+            .map(|r| r.fingerprint.as_str())
+    }
+    /// Record `fingerprint` as `member`'s ready text, or forget it with
+    /// `None` (saved while not ready). Returns whether the case changed.
+    pub fn set_reviewed(&mut self, member: &Path, fingerprint: Option<String>) -> bool {
+        let at = self.reviewed.iter().position(|r| r.member == member);
+        match (at, fingerprint) {
+            (Some(at), None) => {
+                self.reviewed.remove(at);
+                true
+            }
+            (Some(at), Some(fingerprint)) if self.reviewed[at].fingerprint != fingerprint => {
+                self.reviewed[at].fingerprint = fingerprint;
+                true
+            }
+            (None, Some(fingerprint)) => {
+                self.reviewed.push(ReviewedMember {
+                    member: member.to_path_buf(),
+                    fingerprint,
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+    /// Remove `member` and its review fingerprint. Returns whether it was a
+    /// member.
+    pub fn remove_member(&mut self, member: &Path) -> bool {
+        let was = self.members.iter().any(|m| m == member);
+        self.members.retain(|m| m != member);
+        self.reviewed.retain(|r| r.member != member);
+        was
+    }
+    /// The next generated alias of `category` that no identity has ever used.
+    pub fn next_alias(&self, category: Category) -> String {
+        let used = |alias: &str| self.identities.iter().any(|i| i.names(alias));
+        (1..)
+            .map(|n| format!("{}_{n}", category.token()))
+            .find(|alias| !used(alias))
+            .unwrap()
+    }
+    pub fn skipped(&self) -> std::collections::HashSet<Category> {
+        Category::ALL
+            .into_iter()
+            .filter(|c| self.skip.iter().any(|s| s == c.token()))
+            .collect()
+    }
+    pub fn exported_one(&self, index: usize) -> Option<ExportedIdentity> {
+        self.identities.get(index)?.exported()
+    }
+    pub fn exported(&self) -> Vec<ExportedIdentity> {
+        self.identities
+            .iter()
+            .filter_map(StoredIdentity::exported)
+            .collect()
+    }
+    /// Alias-only tombstones. Members must reserve these even though their
+    /// originals no longer exist and cannot be seeded as live identities.
+    pub fn reserved_aliases(&self) -> Vec<String> {
+        self.identities
+            .iter()
+            .filter(|identity| identity.originals.is_empty())
+            .flat_map(|identity| {
+                std::iter::once(identity.alias.clone()).chain(identity.previous.iter().cloned())
+            })
+            .collect()
+    }
+    /// Match an identity by its current alias, then earlier aliases, then a
+    /// shared original. Alias matches keep homonyms distinct (ADR 0041).
+    fn identity_position(&self, incoming: &StoredIdentity) -> Option<usize> {
+        let position =
+            |matches: &dyn Fn(&StoredIdentity) -> bool| self.identities.iter().position(matches);
+        position(&|s| s.alias == incoming.alias)
+            .or_else(|| {
+                position(&|s| {
+                    s.names(&incoming.alias) || incoming.previous.iter().any(|p| s.names(p))
+                })
+            })
+            .or_else(|| position(&|s| incoming.originals.iter().any(|o| s.originals.contains(o))))
+    }
+    /// The member entry that is case identity `index` when the member, which
+    /// did not merge, still exports several entries matching it: the one with
+    /// its alias, then one renamed from it, then the one holding its earliest
+    /// wording (restored Undo history may not remember the newer alias). The
+    /// others are absorbed or split entries, not its rename (ADR 0041).
+    fn member_counterpart<'a>(
+        &self,
+        index: usize,
+        exported: &'a [ExportedIdentity],
+    ) -> Option<&'a ExportedIdentity> {
+        let stored = &self.identities[index];
+        exported
+            .iter()
+            .find(|e| e.alias == stored.alias)
+            .or_else(|| exported.iter().find(|e| e.previous.contains(&stored.alias)))
+            .or_else(|| {
+                let matching: Vec<_> = exported
+                    .iter()
+                    .filter(|e| {
+                        self.identity_position(&StoredIdentity::from_exported(e)) == Some(index)
+                    })
+                    .collect();
+                stored.originals.iter().find_map(|o| {
+                    matching
+                        .iter()
+                        .find(|e| e.originals.iter().any(|m| m.as_ref() == o))
+                        .copied()
+                })
+            })
+    }
+    /// Renames and category changes of surviving identities. Start from each
+    /// current entry so a merge's absorbed entries cannot become renames in
+    /// other members; merges and splits are not propagated (ADR 0041).
+    pub fn renames_since(&self, before: &Self) -> Vec<(String, ExportedIdentity)> {
+        self.identities
+            .iter()
+            .filter_map(|new| {
+                let old = &before.identities[before.identity_position(new)?];
+                // A split can share originals with an entry that still exists;
+                // that new entry is not a rename of the surviving one.
+                if old.alias != new.alias && self.identities.iter().any(|s| s.alias == old.alias) {
+                    return None;
+                }
+                if old.alias != new.alias || old.category != new.category {
+                    Some((old.alias.clone(), new.exported()?))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+    /// Fold a member document's current identities into the case. Identities
+    /// the document no longer uses stay; a renamed alias is kept as an earlier
+    /// alias, so old files and replies still restore (ADR 0041 #23).
+    pub fn merge(&mut self, exported: &[ExportedIdentity]) {
+        for e in exported {
+            // A forgotten identity retains only its aliases, reserving them and
+            // preventing a stale member's autosave from restoring its originals.
+            if self.identities.iter().any(|identity| {
+                identity.originals.is_empty()
+                    && (identity.names(&e.alias)
+                        || e.previous.iter().any(|alias| identity.names(alias)))
+            }) {
+                continue;
+            }
+            let mut incoming = StoredIdentity::from_exported(e);
+            // The current alias first, so homonyms stay apart and a merge
+            // finds its target rather than the identity it absorbed; then an
+            // earlier alias; then a shared original, whatever the category (a
+            // category change renames the alias).
+            let found = self.identity_position(&incoming);
+            if let Some(index) = found
+                && self.identities[index].alias != incoming.alias
+                && self
+                    .member_counterpart(index, exported)
+                    .is_some_and(|counterpart| !std::ptr::eq(counterpart, e))
+            {
+                // This member still has the case's current identity alongside
+                // an absorbed or split one. Keep the current identity rather
+                // than interpreting the other entry as its rename (ADR 0041).
+                let mut retained = self.identities[index].clone();
+                for alias in std::iter::once(&incoming.alias).chain(&incoming.previous) {
+                    if !retained.names(alias) {
+                        retained.previous.push(alias.clone());
+                    }
+                }
+                for original in incoming.originals {
+                    if !retained.originals.contains(&original) {
+                        retained.originals.push(original);
+                    }
+                }
+                incoming = retained;
+            }
+            // Identities the member merged into this one are now named only by
+            // its earlier aliases: fold them in, so no two entries share an
+            // alias (ADR 0080).
+            let mut absorbed = Vec::new();
+            let found = found.map(|index| {
+                let mut kept = Vec::with_capacity(self.identities.len());
+                let mut shifted = index;
+                for (i, s) in std::mem::take(&mut self.identities).into_iter().enumerate() {
+                    if i != index && incoming.previous.contains(&s.alias) {
+                        shifted -= usize::from(i < index);
+                        absorbed.push(s);
+                    } else {
+                        kept.push(s);
+                    }
+                }
+                self.identities = kept;
+                shifted
+            });
+            // An alias moves to one identity only.
+            for (i, other) in self.identities.iter_mut().enumerate() {
+                if Some(i) != found && other.alias != incoming.alias {
+                    other
+                        .previous
+                        .retain(|p| *p != incoming.alias && !incoming.previous.contains(p));
+                }
+            }
+            match found {
+                Some(index) => {
+                    let stored = &mut self.identities[index];
+                    if stored.alias != incoming.alias && !stored.previous.contains(&stored.alias) {
+                        let old = std::mem::take(&mut stored.alias);
+                        stored.previous.push(old);
+                    }
+                    stored.alias = incoming.alias.clone();
+                    stored.category = incoming.category.clone();
+                    let earlier = incoming.previous.into_iter().chain(
+                        absorbed
+                            .iter()
+                            .flat_map(|a| std::iter::once(&a.alias).chain(&a.previous).cloned()),
+                    );
+                    for p in earlier {
+                        if !stored.previous.contains(&p) {
+                            stored.previous.push(p);
+                        }
+                    }
+                    stored.previous.retain(|p| *p != stored.alias);
+                    stored.custom = incoming.custom;
+                    let mut originals = incoming.originals;
+                    let known = std::mem::take(&mut stored.originals);
+                    for o in known
+                        .into_iter()
+                        .chain(absorbed.into_iter().flat_map(|a| a.originals))
+                    {
+                        if !originals.contains(&o) {
+                            originals.push(o);
+                        }
+                    }
+                    stored.originals = originals;
+                }
+                None => self.identities.push(incoming),
+            }
+        }
+    }
+
+    /// Irreversibly discard originals, retaining alias reservations only.
+    pub fn forget_identity(&mut self, alias: &str) -> bool {
+        let Some(identity) = self
+            .identities
+            .iter_mut()
+            .find(|identity| identity.names(alias))
+        else {
+            return false;
+        };
+        if identity.originals.is_empty() {
+            return false;
+        }
+        self.dismissed_hints.retain(|(from, into)| {
+            !identity.originals.contains(from) && !identity.originals.contains(into)
+        });
+        identity.originals.clear();
+        true
+    }
+}
+
+/// Encrypted case files in one directory. Writes and deletes are serialized:
+/// a write older than the last one, or after a delete, is skipped.
+pub struct Store {
+    dir: PathBuf,
+    cipher: Aes256Gcm,
+    /// Last written revision per case; `u64::MAX` once deleted.
+    written: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+}
+impl Store {
+    pub fn default_dir() -> Option<PathBuf> {
+        crate::app_paths::data_local_dir().map(|p| p.join("mdoc").join(key::folder()))
+    }
+    /// Open the store without any OS dialog: `None` when the key can only be
+    /// read after the macOS password dialog (ADR 0043).
+    pub fn open_quietly(dir: PathBuf) -> Result<Option<Self>, CaseError> {
+        if crate::app_paths::isolated() {
+            return Err(CaseError::KeysDisabled);
+        }
+        #[cfg(feature = "deny-os-services")]
+        deny_os_service("the case key");
+        Ok(key::load_quietly(&dir)?.map(|key| Self::with_key(dir, &key)))
+    }
+    /// Open the store, creating the OS-held key on first use.
+    pub fn open(dir: PathBuf) -> Result<Self, CaseError> {
+        if crate::app_paths::isolated() {
+            return Err(CaseError::KeysDisabled);
+        }
+        #[cfg(feature = "deny-os-services")]
+        deny_os_service("the case key");
+        let key = key::load_or_create(&dir)?;
+        Ok(Self::with_key(dir, &key))
+    }
+    pub fn with_key(dir: PathBuf, key: &[u8; 32]) -> Self {
+        Self {
+            dir,
+            cipher: Aes256Gcm::new(key.into()),
+            written: Default::default(),
+        }
+    }
+    fn valid_id(id: &str) -> bool {
+        id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+    fn path(&self, id: &str) -> PathBuf {
+        self.dir.join(format!("{id}.case"))
+    }
+    fn aad(id: &str) -> Vec<u8> {
+        [MAGIC.as_slice(), id.as_bytes()].concat()
+    }
+    pub fn save(&self, case: &Case) -> io::Result<()> {
+        if !Self::valid_id(&case.id) {
+            return Err(io::Error::other("Invalid case id"));
+        }
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        if written
+            .get(&case.id)
+            .is_some_and(|&last| last > case.revision || last == u64::MAX)
+        {
+            return Ok(());
+        }
+        self.write_sealed(
+            &self.path(&case.id),
+            MAGIC,
+            &Self::aad(&case.id),
+            &serde_json::to_vec(case)?,
+        )?;
+        written.insert(case.id.clone(), case.revision);
+        Ok(())
+    }
+    /// Encrypt `plain` with `aad` and replace `path` with it atomically.
+    fn write_sealed(&self, path: &Path, magic: &[u8], aad: &[u8], plain: &[u8]) -> io::Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        let nonce = Nonce::<Aes256Gcm>::try_generate()
+            .map_err(|_| io::Error::other("Could not generate a nonce"))?;
+        let sealed = self
+            .cipher
+            .encrypt(&nonce, Payload { msg: plain, aad })
+            .map_err(|_| io::Error::other("Could not encrypt the case"))?;
+        let mut file = tempfile::NamedTempFile::new_in(&self.dir)?;
+        file.write_all(magic)?;
+        file.write_all(nonce.as_slice())?;
+        file.write_all(&sealed)?;
+        file.flush()?;
+        file.as_file().sync_all()?;
+        file.persist(path).map_err(|error| error.error)?;
+        Ok(())
+    }
+    /// The plaintext [`Self::write_sealed`] wrote to `path`.
+    fn read_sealed(
+        path: &Path,
+        cipher: &Aes256Gcm,
+        magic: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, CaseError> {
+        let bytes = read_limited(path).map_err(CaseError::Read)?;
+        let body = bytes
+            .strip_prefix(magic)
+            .filter(|b| b.len() > NONCE)
+            .ok_or(CaseError::NotACase)?;
+        let (nonce, sealed) = body.split_at(NONCE);
+        let nonce = <&Nonce<Aes256Gcm>>::try_from(nonce).map_err(|_| CaseError::NotACase)?;
+        cipher
+            .decrypt(nonce, Payload { msg: sealed, aad })
+            .map_err(|_| CaseError::WrongKey)
+    }
+    pub fn load(&self, id: &str) -> Result<Case, CaseError> {
+        if !Self::valid_id(id) {
+            return Err(CaseError::InvalidId);
+        }
+        let plain = Self::read_sealed(&self.path(id), &self.cipher, MAGIC, &Self::aad(id))?;
+        let case: Case = serde_json::from_slice(&plain).map_err(|_| CaseError::Damaged)?;
+        if case.id != id {
+            return Err(CaseError::Damaged);
+        }
+        Ok(case)
+    }
+    /// The user-wide lists of Settings › Detection (ADR 0092), sealed like a
+    /// case beside the cases; none saved yet: empty lists at revision 0.
+    pub fn load_lists(&self) -> Result<UserLists, CaseError> {
+        let path = self.dir.join(LISTS_FILE);
+        if !path.exists() {
+            return Ok(UserLists::default());
+        }
+        let plain = Self::read_sealed(&path, &self.cipher, LISTS_MAGIC, LISTS_MAGIC)?;
+        serde_json::from_slice(&plain).map_err(|_| CaseError::Damaged)
+    }
+    /// Save the user-wide lists; a revision older than the last written is
+    /// skipped, as for cases.
+    pub fn save_lists(&self, lists: &UserLists) -> io::Result<()> {
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        if written
+            .get(LISTS_FILE)
+            .is_some_and(|&last| last > lists.revision)
+        {
+            return Ok(());
+        }
+        self.write_sealed(
+            &self.dir.join(LISTS_FILE),
+            LISTS_MAGIC,
+            LISTS_MAGIC,
+            &serde_json::to_vec(lists)?,
+        )?;
+        written.insert(LISTS_FILE.into(), lists.revision);
+        Ok(())
+    }
+    /// How many case files `dir` holds, from their names alone: the count of
+    /// locked cases, read without the key. `None` when `dir` can't be read.
+    pub fn count(dir: &Path) -> Option<usize> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        Some(
+            entries
+                .flatten()
+                .filter(|entry| {
+                    let path = entry.path();
+                    path.extension().is_some_and(|e| e == "case")
+                        && path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .is_some_and(Self::valid_id)
+                })
+                .count(),
+        )
+    }
+    /// Every readable case, and the ids of files that could not be read.
+    pub fn list(&self) -> (Vec<Case>, Vec<String>) {
+        let mut cases = Vec::new();
+        let mut failed = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return (cases, failed);
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|e| e != "case") {
+                continue;
+            }
+            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            match self.load(id) {
+                Ok(case) => cases.push(case),
+                Err(_) => failed.push(id.to_string()),
+            }
+        }
+        cases.sort_by(|a, b| b.created.cmp(&a.created).then(a.name.cmp(&b.name)));
+        (cases, failed)
+    }
+    /// Forget a case: overwrite its file, then remove it. Markdown is untouched.
+    pub fn delete(&self, id: &str) -> io::Result<()> {
+        if !Self::valid_id(id) {
+            return Err(io::Error::other("Invalid case id"));
+        }
+        // Later writes of this case, even ones already queued, are skipped.
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        written.insert(id.to_string(), u64::MAX);
+        let path = self.path(id);
+        let len = match std::fs::metadata(&path) {
+            Ok(meta) => meta.len(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        {
+            let mut file = std::fs::OpenOptions::new().write(true).open(&path)?;
+            file.write_all(&vec![0; len.min(MAX_FILE) as usize])?;
+            file.sync_all()?;
+        }
+        std::fs::remove_file(path)
+    }
+}
+
+fn read_limited(path: &Path) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(MAX_FILE + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_FILE {
+        return Err(io::Error::other("file too large"));
+    }
+    Ok(bytes)
+}
+
+/// Test builds (feature `deny-os-services`, ADR 0095): a call that would ask
+/// the OS's security or identity services panics, so a test that reaches one
+/// fails at once instead of waiting on macOS (#510). The headless render
+/// sandbox is a dev build that asks nothing: there it returns `true`, and the
+/// caller answers as a dev build without asking.
+#[cfg(feature = "deny-os-services")]
+fn deny_os_service(what: &str) -> bool {
+    if crate::app_paths::isolated() {
+        return true;
+    }
+    panic!(
+        "a test asked the OS for {what}: inject the case store and build identity instead \
+         (development.md, Tests and OS services)"
+    )
+}
+
+/// Public build label, using the same runtime identity as case storage (ADR 0045).
+/// This inspects signing metadata only; it never reads the case key.
+pub fn build_identity() -> &'static str {
+    #[cfg(feature = "deny-os-services")]
+    if deny_os_service("the build identity") {
+        return "Dev";
+    }
+    #[cfg(target_os = "macos")]
+    match key::keychain() {
+        key::Keychain::Protected => "Protected",
+        key::Keychain::Release => "Release",
+        key::Keychain::Dev => "Dev",
+    }
+    #[cfg(not(target_os = "macos"))]
+    if cfg!(debug_assertions) {
+        "Dev"
+    } else {
+        "Release"
+    }
+}
+
+/// The 256-bit case key, created once and held by the operating system.
+mod key {
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    use super::Generate;
+    use super::{CaseError, Path};
+    #[cfg(windows)]
+    use std::io::{self, Write};
+
+    /// Which Keychain holds the key, decided once from this build's
+    /// signature (ADR 0045).
+    #[cfg(target_os = "macos")]
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum Keychain {
+        /// Developer ID with a provisioning profile: the data protection
+        /// keychain, which never shows the password dialog.
+        Protected,
+        /// Developer ID without a profile (beta.8 and earlier): the login
+        /// keychain under the release service.
+        Release,
+        /// Unsigned, ad-hoc or someone else's signature: the login keychain
+        /// under its own service and cases folder, so a dev build never
+        /// creates a key that later prompts the release.
+        Dev,
+    }
+    #[cfg(target_os = "macos")]
+    const SERVICE: &str = "io.github.lawkitt.mdoc";
+    #[cfg(target_os = "macos")]
+    const DEV_SERVICE: &str = "io.github.lawkitt.mdoc.dev";
+    #[cfg(target_os = "macos")]
+    const ACCOUNT: &str = "case-key";
+    #[cfg(target_os = "macos")]
+    const TEAM: &str = "F33DLM8K53";
+
+    #[cfg(target_os = "macos")]
+    pub fn keychain() -> Keychain {
+        #[cfg(feature = "deny-os-services")]
+        if super::deny_os_service("the build's code signature") {
+            return Keychain::Dev;
+        }
+        static KEYCHAIN: std::sync::LazyLock<Keychain> = std::sync::LazyLock::new(|| {
+            use security_framework::os::macos::code_signing::{Flags, SecCode, SecRequirement};
+            let requirement: Result<SecRequirement, _> =
+                format!("anchor apple generic and certificate leaf[subject.OU] = \"{TEAM}\"")
+                    .parse();
+            let ours = requirement.is_ok_and(|r| {
+                SecCode::for_self(Flags::NONE)
+                    .and_then(|code| code.check_validity(Flags::NONE, &r))
+                    .is_ok()
+            });
+            // Contents/MacOS/mdoc → Contents/embedded.provisionprofile
+            let profile = std::env::current_exe().ok().is_some_and(|exe| {
+                exe.parent()
+                    .and_then(Path::parent)
+                    .is_some_and(|contents| contents.join("embedded.provisionprofile").is_file())
+            });
+            match (ours, profile) {
+                (true, true) => Keychain::Protected,
+                (true, false) => Keychain::Release,
+                (false, _) => Keychain::Dev,
+            }
+        });
+        *KEYCHAIN
+    }
+
+    /// The cases folder name in app data: dev builds keep their own.
+    pub fn folder() -> &'static str {
+        #[cfg(target_os = "macos")]
+        if keychain() == Keychain::Dev {
+            return "cases-dev";
+        }
+        "cases"
+    }
+
+    /// Read (or create) the key with Keychain dialogs turned off, so this
+    /// never asks: `None` when reading it would show the macOS password
+    /// dialog, e.g. for a new build or after "Allow Once" (ADR 0043).
+    #[cfg(target_os = "macos")]
+    pub fn load_quietly(_: &Path) -> Result<Option<[u8; 32]>, CaseError> {
+        load(true)
+    }
+    #[cfg(not(target_os = "macos"))]
+    pub fn load_quietly(dir: &Path) -> Result<Option<[u8; 32]>, CaseError> {
+        load_or_create(dir).map(Some)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn load_or_create(_: &Path) -> Result<[u8; 32], CaseError> {
+        Ok(load(false)?.expect("only a quiet read is refused"))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn load(quiet: bool) -> Result<Option<[u8; 32]>, CaseError> {
+        match keychain() {
+            Keychain::Release => login_or_create(SERVICE, quiet),
+            Keychain::Dev => login_or_create(DEV_SERVICE, quiet),
+            Keychain::Protected => match protected::read() {
+                // Missing entitlement (errSecMissingEntitlement): a profile
+                // without keychain access; behave like a build without one.
+                Err(-34018) => login_or_create(SERVICE, quiet),
+                Err(e) => Err(CaseError::KeychainRead(e.to_string())),
+                Ok(Some(key)) => Ok(Some(key)),
+                // Not there yet: move the login-keychain key over (the one
+                // dialog, behind the explainer), or create a new one only
+                // when there is certainly no old key to lose.
+                Ok(None) => {
+                    let (key, moved) = match login(SERVICE, quiet)? {
+                        Login::Key(key) => (key, true),
+                        Login::MayAsk => return Ok(None),
+                        Login::Missing => (fresh(), false),
+                    };
+                    protected::write(&key).map_err(|e| CaseError::KeychainStore(e.to_string()))?;
+                    if moved {
+                        forget_legacy();
+                    }
+                    Ok(Some(key))
+                }
+            },
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    enum Login {
+        Key([u8; 32]),
+        /// Reading it would show the macOS password dialog.
+        MayAsk,
+        Missing,
+    }
+
+    /// The key in the login keychain. A quiet read runs with Keychain dialogs
+    /// off; macOS then refuses a read that would ask with
+    /// errSecInteractionNotAllowed or, for an item whose access list does not
+    /// trust this app, errSecAuthFailed. Both mean "may ask", never a denial:
+    /// treating errSecAuthFailed as denied is how beta.7 fell through to a
+    /// loud read at launch (ADR 0045).
+    #[cfg(target_os = "macos")]
+    fn login(service: &str, quiet: bool) -> Result<Login, CaseError> {
+        use security_framework::{
+            os::macos::keychain::SecKeychain, passwords::get_generic_password,
+        };
+        let _quiet = quiet
+            .then(SecKeychain::disable_user_interaction)
+            .transpose()
+            .map_err(|e| CaseError::KeychainRead(e.to_string()))?;
+        match get_generic_password(service, ACCOUNT) {
+            Ok(bytes) => bytes
+                .try_into()
+                .map(Login::Key)
+                .map_err(|_| CaseError::KeychainDamaged),
+            // errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled
+            // with dialogs off: reading would show the dialog.
+            Err(e) if quiet && matches!(e.code(), -25308 | -25293 | -128) => Ok(Login::MayAsk),
+            // errSecUserCanceled, errSecAuthFailed: the dialog was declined.
+            Err(e) if matches!(e.code(), -128 | -25293) => Err(CaseError::KeyDenied),
+            // errSecItemNotFound
+            Err(e) if e.code() == -25300 => Ok(Login::Missing),
+            Err(e) => Err(CaseError::KeychainRead(e.to_string())),
+        }
+    }
+
+    /// The login-keychain key, created on first use; `None` when reading or
+    /// creating it would show the dialog.
+    #[cfg(target_os = "macos")]
+    fn login_or_create(service: &str, quiet: bool) -> Result<Option<[u8; 32]>, CaseError> {
+        use security_framework::{
+            os::macos::keychain::SecKeychain, passwords::set_generic_password,
+        };
+        match login(service, quiet)? {
+            Login::Key(key) => Ok(Some(key)),
+            Login::MayAsk => Ok(None),
+            Login::Missing => {
+                let _quiet = quiet
+                    .then(SecKeychain::disable_user_interaction)
+                    .transpose()
+                    .map_err(|e| CaseError::KeychainStore(e.to_string()))?;
+                let key = fresh();
+                match set_generic_password(service, ACCOUNT, &key) {
+                    Ok(()) => Ok(Some(key)),
+                    // A locked keychain: creating it needs the dialog too.
+                    Err(e) if quiet && e.code() == -25308 => Ok(None),
+                    Err(e) => Err(CaseError::KeychainStore(e.to_string())),
+                }
+            }
+        }
+    }
+
+    /// Delete the moved login-keychain key, with dialogs off: if macOS would
+    /// ask, it stays (the same key, still protected) and is never read again.
+    #[cfg(target_os = "macos")]
+    fn forget_legacy() {
+        use security_framework::{
+            os::macos::keychain::SecKeychain, passwords::delete_generic_password,
+        };
+        let Ok(_quiet) = SecKeychain::disable_user_interaction() else {
+            return;
+        };
+        let _ = delete_generic_password(SERVICE, ACCOUNT);
+    }
+
+    /// The data protection keychain: access is by the app's Keychain access
+    /// group, not a per-item access list, so it never asks.
+    #[cfg(target_os = "macos")]
+    mod protected {
+        use super::{ACCOUNT, SERVICE};
+        use security_framework::passwords::{
+            PasswordOptions, generic_password, set_generic_password_options,
+        };
+        fn options() -> PasswordOptions {
+            let mut options = PasswordOptions::new_generic_password(SERVICE, ACCOUNT);
+            options.use_protected_keychain();
+            options
+        }
+        /// `Ok(None)` when there is no key yet; `Err` is the OSStatus.
+        pub fn read() -> Result<Option<[u8; 32]>, i32> {
+            match generic_password(options()) {
+                Ok(bytes) => bytes.try_into().map(Some).map_err(|_| -26275), // errSecDecode
+                Err(e) if e.code() == -25300 => Ok(None),
+                Err(e) => Err(e.code()),
+            }
+        }
+        pub fn write(key: &[u8; 32]) -> Result<(), security_framework::base::Error> {
+            set_generic_password_options(key, options())
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn load_or_create(dir: &Path) -> Result<[u8; 32], CaseError> {
+        let path = dir.join("key.dpapi");
+        match std::fs::read(&path) {
+            Ok(sealed) => dpapi::unprotect(&sealed)?
+                .try_into()
+                .map_err(|_| CaseError::KeyDamaged),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let key = fresh();
+                let sealed = dpapi::protect(&key)?;
+                std::fs::create_dir_all(dir)
+                    .and_then(|_| {
+                        let mut file = tempfile::NamedTempFile::new_in(dir)?;
+                        file.write_all(&sealed)?;
+                        file.as_file().sync_all()?;
+                        file.persist(&path).map_err(|e| e.error)?;
+                        Ok(())
+                    })
+                    .map_err(CaseError::KeyWrite)?;
+                Ok(key)
+            }
+            Err(e) => Err(CaseError::KeyRead(e)),
+        }
+    }
+
+    /// Linux: the freedesktop Secret Service (GNOME Keyring, KWallet) over a
+    /// pure-Rust D-Bus connection. Without one, cases stay off; there is no
+    /// plaintext fallback.
+    #[cfg(target_os = "linux")]
+    pub fn load_or_create(_: &Path) -> Result<[u8; 32], CaseError> {
+        use secret_service::{EncryptionType, blocking::SecretService};
+        use std::collections::HashMap;
+        let unavailable = |e: secret_service::Error| CaseError::KeyringUnavailable(e.to_string());
+        let service = SecretService::connect(EncryptionType::Dh).map_err(unavailable)?;
+        let collection = service.get_default_collection().map_err(unavailable)?;
+        collection.ensure_unlocked().map_err(unavailable)?;
+        let attributes = || {
+            HashMap::from([
+                ("application", "io.github.lawkitt.mdoc"),
+                ("kind", "case-key"),
+            ])
+        };
+        let found = collection.search_items(attributes()).map_err(unavailable)?;
+        if let Some(item) = found.first() {
+            return item
+                .get_secret()
+                .map_err(unavailable)?
+                .try_into()
+                .map_err(|_| CaseError::KeyringDamaged);
+        }
+        let key = fresh();
+        collection
+            .create_item(
+                "mdoc case key",
+                attributes(),
+                &key,
+                false,
+                "application/octet-stream",
+            )
+            .map_err(|e| CaseError::KeyringStore(e.to_string()))?;
+        Ok(key)
+    }
+
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+    pub fn load_or_create(_: &Path) -> Result<[u8; 32], CaseError> {
+        Err(CaseError::NoKeyStore)
+    }
+
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    fn fresh() -> [u8; 32] {
+        <[u8; 32]>::generate()
+    }
+
+    #[cfg(windows)]
+    mod dpapi {
+        use super::CaseError;
+        use windows_sys::Win32::{
+            Foundation::LocalFree,
+            Security::Cryptography::{
+                CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
+            },
+        };
+        fn run(input: &[u8], protect: bool) -> Result<Vec<u8>, CaseError> {
+            let blob_in = CRYPT_INTEGER_BLOB {
+                cbData: input.len() as u32,
+                pbData: input.as_ptr() as *mut u8,
+            };
+            let mut blob_out = CRYPT_INTEGER_BLOB {
+                cbData: 0,
+                pbData: std::ptr::null_mut(),
+            };
+            // SAFETY: valid input blob; DPAPI allocates the output with
+            // LocalAlloc, which is copied and then freed below.
+            let ok = unsafe {
+                if protect {
+                    CryptProtectData(
+                        &blob_in,
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        CRYPTPROTECT_UI_FORBIDDEN,
+                        &mut blob_out,
+                    )
+                } else {
+                    CryptUnprotectData(
+                        &blob_in,
+                        std::ptr::null_mut(),
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        CRYPTPROTECT_UI_FORBIDDEN,
+                        &mut blob_out,
+                    )
+                }
+            };
+            if ok == 0 || blob_out.pbData.is_null() {
+                return Err(CaseError::DataProtection);
+            }
+            // SAFETY: DPAPI returned cbData bytes at pbData.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(blob_out.pbData, blob_out.cbData as usize).to_vec()
+            };
+            // SAFETY: the buffer was allocated by DPAPI with LocalAlloc.
+            unsafe { LocalFree(blob_out.pbData as _) };
+            Ok(bytes)
+        }
+        pub fn protect(input: &[u8]) -> Result<Vec<u8>, CaseError> {
+            run(input, true)
+        }
+        pub fn unprotect(input: &[u8]) -> Result<Vec<u8>, CaseError> {
+            run(input, false)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity(alias: &str, category: Category, originals: &[&str]) -> ExportedIdentity {
+        ExportedIdentity {
+            alias: alias.into(),
+            previous: Vec::new(),
+            category,
+            custom: false,
+            originals: originals.iter().map(|o| Arc::from(*o)).collect(),
+        }
+    }
+    fn store(dir: &Path) -> Store {
+        Store::with_key(dir.to_path_buf(), &[7; 32])
+    }
+
+    /// The case stored in `tests/fixtures/cases/`, written by aes-gcm 0.10.
+    fn fixture_case() -> Case {
+        let mut case = Case::new(
+            "Petrova v Northwind".into(),
+            &[
+                identity(
+                    "PERSON_1",
+                    Category::Person,
+                    &["Anna Petrova", "A. Petrova"],
+                ),
+                identity("ORG_1", Category::Organization, &["Northwind Ltd"]),
+            ],
+            Some("/docs/contract.md".into()),
+        );
+        case.id = "0123456789abcdef0123456789abcdef".into();
+        case.created = 1_760_000_000;
+        case.revision = 3;
+        case
+    }
+
+    #[test]
+    fn a_case_written_by_aes_gcm_0_10_still_opens() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cases");
+        let dir = tempfile::tempdir().unwrap();
+        let name = "0123456789abcdef0123456789abcdef.case";
+        std::fs::copy(fixture.join(name), dir.path().join(name)).unwrap();
+        let store = store(dir.path());
+        let expected = fixture_case();
+        assert_eq!(store.load(&expected.id).unwrap(), expected);
+        // Rewriting it keeps the format and still opens.
+        let mut next = expected.clone();
+        next.revision += 1;
+        store.save(&next).unwrap();
+        assert_eq!(store.load(&next.id).unwrap(), next);
+    }
+
+    /// Web address only adds a token (ADR 0094): every token saved before
+    /// it reads back as the same category, and a URL identity round trips.
+    #[test]
+    fn tokens_saved_before_web_address_load_unchanged() {
+        for token in [
+            "PERSON", "ORG", "EMAIL", "PHONE", "ADDRESS", "IDENTITY", "TAX", "BANK", "CASE",
+            "DATE", "REDACTED",
+        ] {
+            let stored: StoredIdentity = serde_json::from_value(serde_json::json!({
+                "alias": format!("{token}_1"),
+                "category": token,
+                "originals": ["x"],
+            }))
+            .unwrap();
+            let exported = stored.exported().unwrap();
+            assert_eq!(exported.category.token(), token);
+            assert_eq!(StoredIdentity::from_exported(&exported), stored);
+        }
+        let url = identity("URL_1", Category::Url, &["https://ivanov-law.invalid"]);
+        let stored = StoredIdentity::from_exported(&url);
+        assert_eq!(stored.category, "URL");
+        assert_eq!(stored.exported().unwrap(), url);
+    }
+
+    #[test]
+    fn count_reads_case_file_names_without_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(Store::count(&dir.path().join("missing")), None);
+        assert_eq!(Store::count(dir.path()), Some(0));
+        let store = store(dir.path());
+        for name in ["One", "Two"] {
+            store.save(&Case::new(name.into(), &[], None)).unwrap();
+        }
+        // Other files and badly named case files are not cases.
+        std::fs::write(dir.path().join("notes.txt"), "x").unwrap();
+        std::fs::write(dir.path().join("short.case"), "x").unwrap();
+        assert_eq!(Store::count(dir.path()), Some(2));
+    }
+
+    #[test]
+    fn cases_round_trip_encrypted_and_never_in_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let mut case = Case::new(
+            "Petrova v Northwind".into(),
+            &[identity("PERSON_1", Category::Person, &["Anna Petrova"])],
+            Some("/docs/contract.md".into()),
+        );
+        case.dismissed_hints
+            .push(("Ms Petrova".into(), "Anna Petrova".into()));
+        store.save(&case).unwrap();
+        assert_eq!(store.load(&case.id).unwrap(), case);
+        let bytes = std::fs::read(dir.path().join(format!("{}.case", case.id))).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        for secret in ["Anna", "Petrova", "Ms Petrova", "PERSON_1", "contract.md"] {
+            assert!(
+                !text.contains(secret),
+                "{secret} must not be stored in plaintext"
+            );
+        }
+        let (listed, failed) = store.list();
+        assert_eq!(listed, std::slice::from_ref(&case));
+        assert!(failed.is_empty());
+        assert_eq!(case.exported()[0].wording(), "Anna Petrova");
+    }
+
+    #[test]
+    fn a_member_reply_is_kept_encrypted_replaced_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let mut case = fixture_case();
+        assert_eq!(case.reply(Path::new("/docs/contract.md")), None);
+        let reply = "PERSON_1 owes ORG_1 a reply-only sentence.".to_string();
+        assert!(case.set_reply(Path::new("/docs/contract.md"), Some(reply.clone())));
+        assert!(!case.set_reply(Path::new("/docs/contract.md"), Some(reply.clone())));
+        store.save(&case).unwrap();
+        let bytes = std::fs::read(dir.path().join(format!("{}.case", case.id))).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("reply-only"));
+        let mut loaded = store.load(&case.id).unwrap();
+        assert_eq!(
+            loaded.reply(Path::new("/docs/contract.md")),
+            Some(reply.as_str())
+        );
+        // A different reply replaces it, still one per member.
+        let other = "PERSON_1 sent ORG_1 a second answer.".to_string();
+        assert!(loaded.set_reply(Path::new("/docs/contract.md"), Some(other.clone())));
+        assert_eq!(loaded.replies.len(), 1);
+        loaded.revision += 1;
+        store.save(&loaded).unwrap();
+        let mut loaded = store.load(&case.id).unwrap();
+        assert_eq!(
+            loaded.reply(Path::new("/docs/contract.md")),
+            Some(other.as_str())
+        );
+        assert!(loaded.set_reply(Path::new("/docs/contract.md"), None));
+        assert!(!loaded.set_reply(Path::new("/docs/contract.md"), None));
+        assert!(loaded.replies.is_empty());
+    }
+
+    #[test]
+    fn a_ready_fingerprint_is_kept_encrypted_and_leaves_with_its_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let mut case = fixture_case();
+        let member = Path::new("/docs/contract.md");
+        assert_eq!(case.reviewed(member), None);
+        assert!(case.set_reviewed(member, Some("ab12".into())));
+        assert!(!case.set_reviewed(member, Some("ab12".into())));
+        assert!(case.set_reviewed(member, Some("cd34".into())));
+        assert_eq!(case.reviewed.len(), 1, "one fingerprint per member");
+        store.save(&case).unwrap();
+        let bytes = std::fs::read(dir.path().join(format!("{}.case", case.id))).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("cd34"));
+        let mut loaded = store.load(&case.id).unwrap();
+        assert_eq!(loaded.reviewed(member), Some("cd34"));
+        // Saved while not ready: the fingerprint goes.
+        assert!(loaded.set_reviewed(member, None));
+        assert!(!loaded.set_reviewed(member, None));
+        // Removing a member forgets its fingerprint too.
+        loaded.set_reviewed(member, Some("ef56".into()));
+        assert!(loaded.remove_member(member));
+        assert!(!loaded.remove_member(member));
+        assert!(loaded.members.is_empty() && loaded.reviewed.is_empty());
+    }
+
+    #[test]
+    fn case_swatches_roundtrip_and_old_cases_snap_to_the_nearest_hue() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        for color in CaseColor::ALL {
+            let mut case = fixture_case();
+            case.color = Some(color);
+            store.save(&case).unwrap();
+            assert_eq!(
+                CaseLink::of(&store.load(&case.id).unwrap()).hue(),
+                color.hue()
+            );
+        }
+        let mut json = serde_json::to_value(fixture_case()).unwrap();
+        json.as_object_mut().unwrap().remove("color");
+        let mut old: Case = serde_json::from_value(json).unwrap();
+        assert_eq!(old.color, None);
+        for (hue, expected) in [
+            (359, CaseColor::Red),
+            (32, CaseColor::Orange),
+            (46, CaseColor::Amber),
+            (110, CaseColor::Green),
+            (173, CaseColor::Teal),
+            (219, CaseColor::Blue),
+            (269, CaseColor::Violet),
+            (324, CaseColor::Pink),
+        ] {
+            old.id = format!("{hue:06x}00000000000000000000000000");
+            assert_eq!(CaseLink::of(&old).hue(), expected.hue());
+        }
+    }
+
+    #[test]
+    fn renames_exclude_absorbed_entries_and_follow_the_trailing_identity() {
+        let before = Case::new(
+            "Bennett".into(),
+            &[
+                identity("PERSON_1", Category::Person, &["Maya Bennett"]),
+                identity("PERSON_2", Category::Person, &["Ms Bennett"]),
+                identity("ORG_1", Category::Organization, &["Northwind Ltd"]),
+            ],
+            None,
+        );
+        let mut merged = identity(
+            "PERSON_1",
+            Category::Person,
+            &["Maya Bennett", "Ms Bennett"],
+        );
+        merged.previous.push("PERSON_2".into());
+        let mut after = before.clone();
+        after.merge(&[merged]);
+        assert_eq!(after.identities.len(), 2);
+        assert!(after.renames_since(&before).is_empty());
+        let mut org = identity("COMPANY", Category::Organization, &["Northwind Ltd"]);
+        org.previous.push("ORG_1".into());
+        after.merge(&[org.clone()]);
+        after.identities.reverse();
+        assert_eq!(after.renames_since(&before), [("ORG_1".into(), org)]);
+    }
+
+    #[test]
+    fn unmerged_members_cannot_reverse_a_case_merge() {
+        let mut member = vec![
+            identity("PERSON_1", Category::Person, &["Maya Bennett"]),
+            identity("PERSON_2", Category::Person, &["Ms Bennett"]),
+        ];
+        let mut case = Case::new("Bennett".into(), &member, None);
+        let mut merged = identity(
+            "PERSON_1",
+            Category::Person,
+            &["Maya Bennett", "Ms Bennett"],
+        );
+        merged.previous.push("PERSON_2".into());
+        case.merge(&[merged]);
+        let expected = case.clone();
+        for _ in 0..2 {
+            case.merge(&member);
+            assert_eq!(case, expected);
+            assert!(case.renames_since(&expected).is_empty());
+            member.reverse();
+        }
+    }
+
+    #[test]
+    fn unmerged_member_renames_follow_the_merged_identity_in_either_order() {
+        let mut merged = identity(
+            "PERSON_1",
+            Category::Person,
+            &["Maya Bennett", "Ms Bennett"],
+        );
+        merged.previous.push("PERSON_2".into());
+        let mut case = Case::new("Bennett".into(), &[merged.clone()], None);
+        // The unmerged member renames PERSON_1 forward: whichever entry it
+        // exports first, the merged identity takes the new alias.
+        let mut client = identity("CLIENT", Category::Person, &["Maya Bennett"]);
+        client.previous.push("PERSON_1".into());
+        let short = identity("PERSON_2", Category::Person, &["Ms Bennett"]);
+        let base = case.clone();
+        for member in [
+            [client.clone(), short.clone()],
+            [short.clone(), client.clone()],
+        ] {
+            case = base.clone();
+            case.merge(&member);
+            assert_eq!(case.identities.len(), 1);
+            assert_eq!(case.identities[0].alias, "CLIENT");
+            assert_eq!(case.identities[0].originals[0], "Maya Bennett");
+            assert_eq!(case.renames_since(&base)[0].0, "PERSON_1");
+        }
+        // Undo in that member restores history that no longer remembers
+        // CLIENT. The case wording order decides which entry is the merged
+        // identity, so the Undo propagates as PERSON_1 in either order.
+        let renamed = case.clone();
+        let undone = identity("PERSON_1", Category::Person, &["Maya Bennett"]);
+        for member in [
+            [undone.clone(), short.clone()],
+            [short.clone(), undone.clone()],
+        ] {
+            case = renamed.clone();
+            case.merge(&member);
+            assert_eq!(case.identities.len(), 1);
+            assert_eq!(case.identities[0].alias, "PERSON_1");
+            assert_eq!(case.identities[0].originals[0], "Maya Bennett");
+            assert!(case.identities[0].names("PERSON_2"));
+            assert!(case.identities[0].names("CLIENT"));
+            let renames = case.renames_since(&renamed);
+            assert_eq!(renames.len(), 1);
+            assert_eq!(renames[0].0, "CLIENT");
+            assert_eq!(renames[0].1.alias, "PERSON_1");
+        }
+    }
+
+    #[test]
+    fn rename_correspondence_prefers_aliases_then_previous_then_originals() {
+        let mut before = Case::new("Homonyms".into(), &[], None);
+        // An existing case can distinguish homonyms by alias; construct both
+        // stored entries explicitly so initial shared-original folding cannot
+        // collapse the correspondence fixture before the test starts.
+        before.identities = [
+            identity("PERSON_1", Category::Person, &["Alex Smith"]),
+            identity("PERSON_2", Category::Person, &["Alex Smith"]),
+        ]
+        .iter()
+        .map(StoredIdentity::from_exported)
+        .collect();
+        let mut after = before.clone();
+        after.identities.reverse();
+        assert!(
+            after.renames_since(&before).is_empty(),
+            "same alias wins over a shared original"
+        );
+        let mut split = before.clone();
+        let mut member = before.exported();
+        member.push(identity("PERSON_3", Category::Person, &["Alex Smith"]));
+        split.merge(&member);
+        assert!(
+            split.renames_since(&before).is_empty(),
+            "splits are not renames"
+        );
+        let new = &mut after.identities[0];
+        new.previous
+            .push(std::mem::replace(&mut new.alias, "CLIENT".into()));
+        new.originals = vec!["Alexander Smith".into()];
+        assert_eq!(
+            after.renames_since(&before)[0].0,
+            "PERSON_2",
+            "earlier alias wins even without a shared original"
+        );
+        let before = Case::new(
+            "Category change".into(),
+            &[identity("PERSON_1", Category::Person, &["Northwind"])],
+            None,
+        );
+        let after = Case::new(
+            "Category change".into(),
+            &[identity("ORG_1", Category::Organization, &["Northwind"])],
+            None,
+        );
+        assert_eq!(
+            after.renames_since(&before),
+            [("PERSON_1".into(), after.exported()[0].clone())]
+        );
+    }
+
+    #[test]
+    fn forgotten_originals_cannot_return_from_a_stale_member() {
+        let mut case = fixture_case();
+        let old = case.exported();
+        let alias = old[0].alias.clone();
+        let wording = old[0].wording().to_string();
+        case.dismissed_hints = vec![
+            ("Short form".into(), wording.clone()),
+            (wording, "Other variant".into()),
+            ("Unrelated short".into(), "Unrelated full".into()),
+        ];
+        assert!(case.forget_identity(&alias));
+        assert_eq!(
+            case.dismissed_hints,
+            [("Unrelated short".into(), "Unrelated full".into())]
+        );
+        assert!(!case.forget_identity(&alias));
+        case.merge(&old);
+        assert!(
+            !case
+                .exported()
+                .iter()
+                .any(|identity| identity.alias == alias)
+        );
+        assert!(
+            case.identities
+                .iter()
+                .find(|identity| identity.alias == alias)
+                .unwrap()
+                .originals
+                .is_empty()
+        );
+        assert_ne!(case.next_alias(old[0].category), alias);
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        store.save(&case).unwrap();
+        assert_eq!(store.load(&case.id).unwrap(), case);
+    }
+
+    #[test]
+    fn tampered_misnamed_or_foreign_key_files_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let case = Case::new("A".into(), &[], None);
+        store.save(&case).unwrap();
+        let path = dir.path().join(format!("{}.case", case.id));
+        let mut bytes = std::fs::read(&path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(store.load(&case.id).is_err(), "tampering");
+        store.save(&case).unwrap();
+        let other = Store::with_key(dir.path().into(), &[8; 32]);
+        assert!(other.load(&case.id).is_err(), "different key");
+        // A file renamed to another id fails authentication.
+        let renamed = "0".repeat(32);
+        std::fs::copy(&path, dir.path().join(format!("{renamed}.case"))).unwrap();
+        assert!(store.load(&renamed).is_err());
+        assert_eq!(store.list().1, [renamed]);
+        assert!(store.load("../escape").is_err());
+    }
+
+    #[test]
+    fn stale_writes_and_writes_after_delete_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let mut case = Case::new("A".into(), &[], None);
+        case.revision = 2;
+        store.save(&case).unwrap();
+        let mut older = case.clone();
+        older.revision = 1;
+        older.name = "old".into();
+        store.save(&older).unwrap();
+        assert_eq!(store.load(&case.id).unwrap().name, "A");
+        store.delete(&case.id).unwrap();
+        case.revision = 3;
+        store.save(&case).unwrap();
+        assert!(
+            store.load(&case.id).is_err(),
+            "a queued save cannot resurrect it"
+        );
+    }
+
+    #[test]
+    fn deleting_wipes_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let case = Case::new("A".into(), &[], None);
+        store.save(&case).unwrap();
+        store.delete(&case.id).unwrap();
+        assert!(store.load(&case.id).is_err());
+        assert!(store.list().0.is_empty());
+        store.delete(&case.id).unwrap();
+    }
+
+    /// Every alias, current or earlier, names one case entry.
+    fn assert_aliases_unique(case: &Case) {
+        let mut seen = std::collections::HashSet::new();
+        for identity in &case.identities {
+            for alias in std::iter::once(&identity.alias).chain(&identity.previous) {
+                assert!(seen.insert(alias.clone()), "{alias} names two entries");
+            }
+        }
+    }
+
+    #[test]
+    fn a_merge_into_a_later_case_identity_folds_the_earlier_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let mut case = Case::new(
+            "Bennett".into(),
+            &[
+                identity("PERSON_1", Category::Person, &["Ms Bennett"]),
+                identity("ORG_1", Category::Organization, &["Northwind Ltd"]),
+                identity("PERSON_2", Category::Person, &["Maya Bennett"]),
+            ],
+            None,
+        );
+        // The member merged PERSON_1 into PERSON_2, which keeps its alias.
+        let mut merged = identity(
+            "PERSON_2",
+            Category::Person,
+            &["Maya Bennett", "Ms Bennett"],
+        );
+        merged.previous = vec!["PERSON_1".into()];
+        case.merge(&[merged.clone()]);
+        assert_aliases_unique(&case);
+        let people: Vec<_> = case
+            .identities
+            .iter()
+            .filter(|i| i.category == "PERSON")
+            .collect();
+        assert_eq!(people.len(), 1, "{:?}", case.identities);
+        assert_eq!(people[0].alias, "PERSON_2");
+        assert_eq!(people[0].previous, ["PERSON_1"]);
+        assert_eq!(people[0].originals, ["Maya Bennett", "Ms Bennett"]);
+        assert_eq!(case.identities[0].alias, "ORG_1", "order otherwise kept");
+        // Saving and reopening keeps one entry; merging again changes nothing.
+        store.save(&case).unwrap();
+        let mut reopened = store.load(&case.id).unwrap();
+        assert_eq!(reopened, case);
+        reopened.merge(&[merged]);
+        assert_eq!(reopened.identities, case.identities);
+        assert_eq!(reopened.next_alias(Category::Person), "PERSON_3");
+        let exported = reopened.exported();
+        assert_eq!(exported.len(), 2);
+        assert!(
+            exported
+                .iter()
+                .any(|e| e.alias == "PERSON_2" && e.previous == ["PERSON_1"])
+        );
+    }
+
+    #[test]
+    fn a_merge_into_an_earlier_case_identity_keeps_one_entry() {
+        let mut case = Case::new(
+            "Bennett".into(),
+            &[
+                identity("PERSON_1", Category::Person, &["Maya Bennett"]),
+                identity("PERSON_2", Category::Person, &["Ms Bennett"]),
+            ],
+            None,
+        );
+        let mut merged = identity(
+            "PERSON_1",
+            Category::Person,
+            &["Maya Bennett", "Ms Bennett"],
+        );
+        merged.previous = vec!["PERSON_2".into()];
+        case.merge(&[merged]);
+        assert_aliases_unique(&case);
+        assert_eq!(case.identities.len(), 1);
+        assert_eq!(case.identities[0].alias, "PERSON_1");
+        assert_eq!(case.identities[0].previous, ["PERSON_2"]);
+    }
+
+    #[test]
+    fn an_old_case_without_dismissed_hints_opens() {
+        let mut json = serde_json::to_value(fixture_case()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("dismissed_hints")
+            .unwrap();
+        let old: Case = serde_json::from_value(json).unwrap();
+        assert!(old.dismissed_hints.is_empty());
+        assert_eq!(old, fixture_case());
+    }
+
+    #[test]
+    fn merging_keeps_unused_identities_and_renamed_aliases() {
+        let mut case = Case::new(
+            "A".into(),
+            &[
+                identity("PERSON_1", Category::Person, &["Anna Petrova"]),
+                identity("ORG_1", Category::Organization, &["Northwind Ltd"]),
+            ],
+            None,
+        );
+        // The document renamed PERSON_1, learned a variant and dropped ORG_1.
+        let mut renamed = identity("BUYER", Category::Person, &["Anna Petrova", "A. Petrova"]);
+        renamed.custom = true;
+        case.merge(&[
+            renamed,
+            identity("PERSON_2", Category::Person, &["Ivan Ivanov"]),
+        ]);
+        assert_eq!(case.identities.len(), 3);
+        let anna = &case.identities[0];
+        assert_eq!(anna.alias, "BUYER");
+        assert_eq!(anna.previous, ["PERSON_1"]);
+        assert_eq!(anna.originals, ["Anna Petrova", "A. Petrova"]);
+        assert_eq!(case.identities[1].alias, "ORG_1");
+        assert_eq!(case.identities[2].alias, "PERSON_2");
+        // Renaming back moves the alias, never duplicating it.
+        case.merge(&[identity("PERSON_1", Category::Person, &["Anna Petrova"])]);
+        let anna = &case.identities[0];
+        assert_eq!(
+            (anna.alias.as_str(), anna.previous.as_slice()),
+            ("PERSON_1", &["BUYER".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn user_lists_are_sealed_beside_the_cases_and_survive_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            store(dir.path()).load_lists().unwrap(),
+            UserLists::default()
+        );
+        let mut saved = UserLists::default();
+        saved.lists.add_never("Supreme Court");
+        saved
+            .lists
+            .add_always("Acme Holdings", Category::Organization);
+        saved.revision = 2;
+        store(dir.path()).save_lists(&saved).unwrap();
+        // A new store on the same key: the next launch.
+        assert_eq!(store(dir.path()).load_lists().unwrap(), saved);
+        let bytes = std::fs::read(dir.path().join(LISTS_FILE)).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("Acme"));
+        // The file is no case: listing and counting skip it.
+        assert_eq!(Store::count(dir.path()), Some(0));
+        assert_eq!(store(dir.path()).list(), (Vec::new(), Vec::new()));
+        assert!(matches!(
+            Store::with_key(dir.path().to_path_buf(), &[8; 32]).load_lists(),
+            Err(CaseError::WrongKey)
+        ));
+        // An older revision never overwrites a newer one.
+        let store = store(dir.path());
+        let mut newer = saved.clone();
+        newer.revision = 3;
+        newer.lists.add_never("Riverside");
+        store.save_lists(&newer).unwrap();
+        store.save_lists(&saved).unwrap();
+        assert_eq!(store.load_lists().unwrap(), newer);
+    }
+
+    #[test]
+    fn a_case_keeps_its_own_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let mut a = Case::new("A".into(), &[], None);
+        a.lists.add_never("Maya Bennett");
+        let b = Case::new("B".into(), &[], None);
+        store.save(&a).unwrap();
+        store.save(&b).unwrap();
+        assert!(store.load(&a.id).unwrap().lists.never_has("maya bennett"));
+        assert!(store.load(&b.id).unwrap().lists.is_empty());
+    }
+}

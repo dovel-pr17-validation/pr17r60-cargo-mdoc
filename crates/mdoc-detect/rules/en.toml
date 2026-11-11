@@ -1,0 +1,1345 @@
+# mdoc's rule pack, part 2 of 3: English. Sections and fields are described
+# in shared.toml.
+
+
+# No English nicknames yet.
+variants = []
+
+# Capitalized occupational surnames remain PERSON even without another mention.
+# Most are already outside the role vocabulary; listing them also protects
+# future additions. Initial + role is protected in code; plurals need listing.
+role_surnames = [
+    "master", "masters", "steward", "stewards", "judge", "marshal", "sheriff",
+    "bishop", "chancellor", "clerk", "mayor", "dean", "sergeant", "banker",
+    "cook", "porter", "baker", "taylor", "mason", "carter", "fowler",
+    "leader", "chair", "chairman",
+]
+
+# Complete job titles come off a name's edges (#385). Do not trim their
+# individual heads: "Ivo Leader" and "Edda Chair" may be full names.
+[[span]]
+category = "PERSON"
+trim = [
+    "team leader", "chief investigator", "bureau safety manager",
+    "accident investigation advisor", "program manager",
+    "vice president of infrastructure", "chief executive officer",
+    "head of delegation", "magistrate judge", "notary public",
+    "division administrator", "international agreements specialist",
+    "chapter 7 trustee", "chapter 11 trustee", "first defendant", "second claimant",
+    "lead agent", "dealer covered person", "sponsor staff", "operating principal",
+    "bankrupt party", "attorneys for plaintiffs",
+]
+
+# The same role phrases around an organization's actual name (#385).
+[[span]]
+category = "ORG"
+role_trim = true
+trim = [
+    "trustee",
+    "team leader", "chief investigator", "bureau safety manager",
+    "accident investigation advisor", "program manager",
+    "vice president of infrastructure", "chief executive officer",
+    "head of delegation", "magistrate judge", "notary public",
+    "division administrator", "international agreements specialist",
+    "chapter 7 trustee", "chapter 11 trustee", "first defendant", "second claimant",
+    "lead agent", "dealer covered person", "sponsor staff", "operating principal",
+    "bankrupt party", "attorneys for plaintiffs",
+]
+
+# Titles and post-nominals stay outside a person's span: "Ms Bennett" is
+# proposed as "Bennett", "Ysolde Qhenn, KC" as "Ysolde Qhenn" (guide rule 1,
+# #382). A title's period goes with it. Run after job phrases (#385), so
+# "Chief Investigator Ms Edda Brannock" also loses "Ms".
+[[span]]
+category = "PERSON"
+trim = [
+    "mr", "mrs", "ms", "miss", "mx", "dr", "prof", "professor", "sir", "dame",
+    "lord", "lady", "madam", "madame", "mme", "mlle", "herr", "frau", "monsieur",
+    "kc", "qc", "esq", "phd",
+]
+
+# Two initials before a surname belong to the name: the model's "Quill" in
+# "J. R. Quill" grows to the whole of it (guide rule 1, #391). Not after
+# it: "Smith J" is a judge's title. Only spaces between, never a line.
+[[span]]
+category = "PERSON"
+extend = [
+    '\b[A-Z]\.[ \t]?[A-Z]\.[ \t]+(?:[A-Z][\x27’])?[A-Z][A-Za-z]*[a-z](?:-[A-Z][A-Za-z]*[a-z])*',
+]
+
+# "& Anor" and "& Ors" (and another, and others) in a case name come off
+# a party's edge: "Pellow Holdings Ltd & Anor" is "Pellow Holdings Ltd"
+# (guide rule 2, issue #499). The "&" goes with the end's punctuation below.
+[[span]]
+category = "ORG"
+trim = ["anor", "ors"]
+
+# An organization ends with its legal form, not the sentence's period or
+# comma: "Northbridge Legal Ltd." at a sentence end is "Northbridge Legal
+# Ltd" (#374), nor with an "&" a trim left behind.
+[[span]]
+category = "ORG"
+strip_end = ".,;:&"
+
+# A tax number's label stays outside its span: the model's "EIN 98-7654321"
+# is "98-7654321" (guide rule 6, issue #480).
+[[span]]
+category = "TAX"
+trim = ["ein", "tin", "itin", "utr"]
+
+# A bank account's label stays outside its span too: the model's "IBAN
+# GB47 KELD …" is "GB47 KELD …" (guide rule 6, issue #486). "acct" is no
+# trim word, since it may end a value; the labelled values below take it.
+[[span]]
+category = "BANK"
+trim = [
+    "iban", "a/c", "account", "account no", "account number", "bank account",
+]
+
+# A declaration or an affidavit is a person's: the model's organization
+# "Ostrand Decl." is the person "Ostrand" when a person's span names them
+# ("Mr Ivo Ostrand"; guide rule 1, issue #499).
+[[span]]
+category = "ORG"
+person_before = ["decl", "declaration", "aff", "affidavit"]
+
+# Titles: never a name on their own ("Ms", "Dr."), also plural ("Drs").
+# French and German titles turn up in English documents too.
+[[never]]
+match = "plural"
+words = [
+    "mr", "mrs", "ms", "miss", "mx", "dr", "prof", "professor", "sir", "dame",
+    "lord", "lady", "madam", "madame", "mme", "mlle", "herr", "frau", "monsieur",
+]
+
+# Family words: "her husband" names no one.
+[[never]]
+match = "plural"
+words = ["husband", "wife", "spouse", "partner", "father", "mother", "daughter"]
+
+# Roles in a matter or a contract: "the Employer", "Her Adviser", "Parties"
+# (issues #302, #385). A title or a full name keeps a role-like surname.
+[[never]]
+match = "plural"
+words = [
+    "adviser", "advisor", "solicitor", "barrister", "counsel", "lawyer",
+    "attorney", "client", "employer", "employee", "claimant", "respondent",
+    "applicant", "defendant", "plaintiff", "appellant", "party", "parties",
+    "buyer", "seller", "landlord", "tenant", "lessor", "lessee", "licensor",
+    "licensee", "contractor", "customer", "supplier", "company", "director",
+    "witness", "judge", "owner", "repairer", "assignee", "assignor",
+    "provider", "debtor", "trustee", "creditor", "appellee", "affiliate",
+    "agent", "subscriber", "dealer", "sponsor", "recipient", "franchisee",
+    "participant", "user", "discloser",
+]
+unless_named = true
+person_role = true
+
+# "Anor" and "Ors" (another, others) in a case name ("X Ltd & Anor") name
+# no one (issue #499).
+[[never]]
+match = "whole"
+words = ["anor", "ors"]
+
+# The words for people themselves ("People").
+[[never]]
+match = "plural"
+words = ["people", "person", "individual"]
+
+# Determiners around a role name no one either ("The Employer"). Matched
+# whole only.
+[[never]]
+match = "whole"
+words = ["the", "an", "her", "his", "their", "its", "our", "my", "your", "this", "that", "said"]
+
+# Job roles: never a name alone ("Surveyor"). Only a complete role phrase
+# goes ("Costs Officer", "Administrative Team"); another word keeps a
+# person's or company's name ("John Clerk", "Brannock Leader"; #385).
+[[never]]
+match = "plural"
+words = [
+    "reviewer", "surveyor", "representative", "secretary",
+    "expert", "registrar", "assessor", "adjudicator", "mediator",
+    "arbitrator", "clerk", "leader", "investigator", "specialist", "marshal",
+    "supervisor", "chair", "chairman", "president", "sergeant", "sheriff",
+    "undersheriff", "master", "recorder", "administrator", "notary",
+    "esquire", "treasurer", "ceo", "cxo", "hod", "magistrate",
+]
+unless_named = true
+person_role = true
+
+# A private body's department is no organization (GUIDE #506 item 9).
+# A legal form keeps the company; these words may still be person surnames.
+[[never]]
+match = "plural"
+words = [
+    "team", "officer", "committee", "inspector", "desk",
+]
+unless_named = true
+person_role = true
+last_word_of = ["ORG"]
+
+# The same roles' -ies plurals.
+[[never]]
+match = "whole"
+words = ["secretaries", "deputies", "chairmen"]
+unless_named = true
+person_role = true
+
+# Words that make a job title of a role: "Technical Reviewer", "Managing
+# Director" name no one (guide rule 8). Alone they may name someone or
+# a company ("VICE"); only a multiword phrase uses them as modifiers.
+[[never]]
+match = "whole"
+words = [
+    "technical", "managing", "senior", "junior", "chief", "deputy",
+    "assistant", "executive", "independent", "administrative",
+    "first", "second", "third", "fourth", "fifth", "sixth", "seventh",
+    "eighth", "ninth", "tenth", "bankrupt", "lead", "covered", "operating",
+    "circuit", "district", "bureau", "accident", "investigation", "vice",
+    "other", "originating", "host", "agreement", "agreements",
+    "division", "public", "fire", "costs",
+    "acting", "head", "general", "generals", "principal", "principals",
+]
+unless_named = true
+phrase_only = true
+
+# An explanatory note can explicitly define capacities rather than people.
+# Require the defining clause as well as role vocabulary; "Principal"
+# alone, or beside an actual name, remains a possible name.
+[[reference]]
+pattern = '(?i)\bthe[\p{Zs}\t]+terms?[\p{Zs}\t]+(?:principal|attorney|witness)(?:[\p{Zs}\t]*(?:,|and|or)[\p{Zs}\t]+(?:principal|attorney|witness))*[\p{Zs}\t]+describ(?:e|es)[\p{Zs}\t]+(?:a[\p{Zs}\t]+)?capacit(?:y|ies)\b'
+
+# Complete role-only phrases whose numbers, prepositions or optional
+# plural suffix escape word lists (#385). Both ends are anchored: a name
+# beside a role must survive. A person's preceding title keeps a surname
+# that happens to be one of these phrases.
+[[never]]
+match = "pattern"
+patterns = [
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+)?(?:international[\p{Zs}\t]+agreements[\p{Zs}\t]+specialists?|chapter[\p{Zs}\t]+\d{1,2}[\p{Zs}\t]+trustees?|(?:plaintiff|defendant|claimant|circuit[\p{Zs}\t]+judge)\(s\)|head[\p{Zs}\t]+of[\p{Zs}\t]+delegation|attorneys?[\p{Zs}\t]+for[\p{Zs}\t]+plaintiffs?|vice[\p{Zs}\t]+president[\p{Zs}\t]+of[\p{Zs}\t]+infrastructure|king[\p{Zs}\t]+of[\p{Zs}\t]+sweden)[\s\p{P}]*$',
+]
+anywhere_in = ["PERSON"]
+unless_titled = true
+
+# The same complete phrases misclassified as organizations (#385).
+[[never]]
+match = "pattern"
+patterns = [
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+)?(?:international[\p{Zs}\t]+agreements[\p{Zs}\t]+specialists?|chapter[\p{Zs}\t]+\d{1,2}[\p{Zs}\t]+trustees?|(?:plaintiff|defendant|claimant|circuit[\p{Zs}\t]+judge)\(s\)|head[\p{Zs}\t]+of[\p{Zs}\t]+delegation|attorneys?[\p{Zs}\t]+for[\p{Zs}\t]+plaintiffs?|vice[\p{Zs}\t]+president[\p{Zs}\t]+of[\p{Zs}\t]+infrastructure|king[\p{Zs}\t]+of[\p{Zs}\t]+sweden)[\s\p{P}]*$',
+]
+anywhere_in = ["ORG"]
+
+# These complete headings/roles contain modifiers alone; they do not
+# make other modifier combinations ("General Accident") generic.
+[[never]]
+match = "pattern"
+patterns = [
+    '(?i)^[\s\p{P}]*(?:(?:[a-z]\.[\p{Zs}\t]+)?general[\p{Zs}\t]+terms|operating[\p{Zs}\t]+principals?)[\s\p{P}]*$',
+]
+anywhere_in = ["PERSON"]
+unless_titled = true
+
+# The same complete headings/roles misclassified as organizations.
+[[never]]
+match = "pattern"
+patterns = [
+    '(?i)^[\s\p{P}]*(?:(?:[a-z]\.[\p{Zs}\t]+)?general[\p{Zs}\t]+terms|operating[\p{Zs}\t]+principals?)[\s\p{P}]*$',
+]
+anywhere_in = ["ORG"]
+
+# Category words: "Email", "Address", "Bank" in a table header name no one
+# (issue #379). Matched whole, with their plurals listed, so the surname
+# "Banks" stays.
+[[never]]
+match = "whole"
+words = [
+    "email", "emails", "e-mail", "phone", "phones", "telephone", "address",
+    "addresses", "organisation", "organisations", "organization",
+    "organizations", "bank", "account", "accounts", "passport", "name",
+    "names",
+]
+
+# Generic nouns of a contract or a complaint that a document defines as a
+# term for a party or its business ("(the “Distributor”)", "(the
+# “Franchised Business”)", "(“Townhouse”)"): once the document defines one,
+# every mention of it, alone or with the other generic words of the term
+# ("RESELLER AGREEMENT"), is a defined term and no organization (guide rule
+# 2, issue #390). Only where the document defines it: elsewhere a company
+# may share the word, and a term with any coined or real word ("Kew
+# Project", "Quillon", "Fox") defines none. Plurals are matched; the -ies
+# plurals are listed.
+[[defined]]
+match = "plural"
+words = [
+    "distributor", "sponsor", "reseller", "club", "concessionaire",
+    "franchisee", "franchisor", "firm", "affiliate", "subsidiary", "agent", "member",
+    "subscriber", "vendor", "purchaser", "operator", "guarantor", "borrower",
+    "lender", "mortgagor", "mortgagee", "trustee", "beneficiary",
+    "consultant", "developer", "corporation", "group", "fund", "estate",
+    "authority", "territory", "townhouse", "network", "site", "property",
+    "premises", "business", "agency", "shareholder", "stockholder", "class",
+    "proceeding", "action", "loan", "mortgage", "asset", "transfer",
+    "application", "jurisdiction", "trade", "judgment",
+]
+
+# The -ies and -es plurals of the same words.
+[[defined]]
+match = "whole"
+words = [
+    "subsidiaries", "beneficiaries", "entities", "entity", "businesses",
+    "authorities", "territories", "properties", "companies", "agencies",
+]
+
+# Words that qualify a defined term ("Franchised Business", "Selling
+# Jurisdictions", "Named Account", "Declaratory Judgment Action", "other
+# Party", "Uncontested Material Fact").
+[[defined]]
+match = "plural"
+words = [
+    "franchised", "proprietary", "subscription", "selling", "named",
+    "declaratory", "other", "such", "uncontested", "undisputed", "material",
+    "summary", "supplemental", "amended", "def", "pl",
+]
+
+# Documents of a contract or a case: a defined term of them is no
+# organization ("Agency Agreement", "Subscription Agreements"), and an
+# abbreviation defined after a long form of generic words with one of these
+# among them names no one: "Def.'s Statement of Uncontested Material Fact
+# (“DSUMF”)" (guide rule 2, issue #390). A long form with any other word, or
+# a legal form, keeps its abbreviation.
+[[defined]]
+match = "plural"
+document = true
+words = [
+    "agreement", "contract", "statement", "motion", "memorandum", "response",
+    "reply", "brief", "declaration", "affidavit", "complaint", "petition",
+    "opposition", "order", "report", "notice", "exhibit", "schedule", "annex",
+    "fact", "answer", "request", "stipulation", "opinion",
+]
+
+# Common words that name no one alone, though a person may be called so
+# (issue #500, guide rules 1 and 8): pronouns ("He appeals", "It contends"
+# as an organization), the "In" of "In re" and a sentence's "In", and a
+# running header's "Others". After a title ("Mr He", "Ms In") or where a
+# person span in the document has the word beside a name ("He Jiankui",
+# "Sarah In"), it is that person's name.
+[[never]]
+match = "whole"
+words = ["he", "she", "it", "they", "we", "you", "him", "them", "others", "another", "in", "re"]
+unless_named = true
+
+# The same for capitalised common words of headings and running headers:
+# "Approved Judgment", "Program Announcement", "General Terms", "Federal
+# government", "Law School" as an organization, and "End Products" after a
+# nationality (#492). "Mr. General", "Jane Federal" and "Paul Program" stay;
+# so does an organization with any other word ("General Motors", "Harvard
+# Law School").
+[[never]]
+match = "plural"
+words = [
+    "approved", "judgment", "judgement", "announcement", "term",
+    "federal", "law", "school", "end", "product",
+]
+unless_named = true
+
+# Head words of programmes, plans, standards, projects and trials, and of
+# software, sites and portals: common words that name no one alone, and an
+# organization span ending in one is the programme or the product, not a
+# company ("Bright Paths Program", "National Reading Access Standard",
+# "Timber Trade Online", "Application Manager"; guide rules 2 and 8, issues
+# #501 and #488). A company keeps them before its legal form ("Acme Program
+# Ltd") or with another word after them ("Plan International"); a person
+# after a title ("Mr Standard").
+[[never]]
+match = "plural"
+words = [
+    "program", "programme", "initiative", "standard", "plan", "assurance",
+    "project", "trial", "online", "portal", "platform", "website",
+    "app",
+]
+unless_named = true
+last_word_of = ["ORG"]
+
+# A manager is both a job's head and software's ("Application Manager").
+[[never]]
+match = "plural"
+words = ["manager"]
+unless_named = true
+person_role = true
+last_word_of = ["ORG"]
+
+# The same for "system", whose plural ends many a company's name ("Acme
+# Systems"): "the Case Management System" is software (issue #488).
+[[never]]
+match = "whole"
+words = ["system"]
+unless_named = true
+last_word_of = ["ORG"]
+
+# A head word in lower case after a name is a common noun, whatever it
+# names: "VR services", "Pumping Plant project", "the Grants system" are no
+# company (issues #501 and #488). "Northvale Ledger Services" in title case
+# may be one, and keeps its name.
+[[never]]
+match = "pattern"
+patterns = [
+    '[\p{Alphabetic}\p{N}.][\p{Zs}\t]+(?:services?|programs?|programmes?|projects?|plans?|initiatives?|standards?|trials?|systems?|portals?|platforms?|websites?|apps?|software|databases?)[\s\p{P}]*$',
+]
+anywhere_in = ["ORG"]
+
+# Head words of medical conditions: "Acute Lung Injury", "Acute Kidney
+# Strain" and "Respiratory Distress Syndrome" are no organizations, nor
+# anyone (issue #501).
+[[never]]
+match = "plural"
+words = [
+    "syndrome", "disease", "disorder", "injury", "infection", "deficiency",
+    "insufficiency", "strain",
+]
+unless_named = true
+last_word_of = ["ORG"]
+
+# Generic words of a business's parts, functions and documents: a span of
+# these alone names no company ("Crew", "Operations", "Assignment",
+# "Facilities", "Federal Employment", "Human Resources", "F.O.B.
+# Destination"; guide rules 2 and 8, issue #501). Any other word keeps a
+# company ("Copper Dusk Facilities Ltd", "Crew Clothing"); a title keeps a
+# person ("Ms Crew").
+[[never]]
+match = "plural"
+words = [
+    "crew", "service", "operation", "assignment", "facility", "employment", "destination",
+    "origin", "maintenance", "management", "personnel", "staff", "staffing",
+    "payroll", "procurement", "purchasing", "accounting", "finance",
+    "compliance", "security", "safety", "training", "admission", "enrollment",
+    "enrolment", "recruitment", "human", "resource", "support", "benefit",
+    "billing", "collection", "dispatch", "headquarters", "acute", "chronic",
+]
+unless_named = true
+
+# The same words' -ies plurals ("Facilities", "Securities" alone).
+[[never]]
+match = "whole"
+words = ["facilities", "securities"]
+unless_named = true
+
+# Common English abbreviations of tax, trade, finance, education and records
+# name no one ("VAT", "EFT", "F.O.B.", "OEM", "SICAV", "OBO", "NOBO", "LEA",
+# "IEP", "FAPE", "RNG", "MMS" as a person, "FOBTs"; guide rule 8, issues
+# #481 and #501). Any other word keeps a company ("Acme Fund SICAV"); a
+# title or a full name keeps a person.
+[[never]]
+match = "plural"
+words = [
+    "vat", "eft", "ach", "f.o.b", "fob", "c.i.f", "cif", "oem", "sicav", "oeic",
+    "obo", "nobo", "iep", "fape", "rti", "k-12", "sop", "amld", "fobt", "rng",
+    "mms", "nimas", "kyc", "aml",
+]
+unless_named = true
+
+# The abbreviations that are also names or words ("Lea", "Sea", "Fir",
+# "Hel") count only in capitals, as an organization: "the LEA's IEP", "the
+# SEA" (issue #481). "Lea signed" stays a person.
+[[never]]
+match = "pattern"
+patterns = [
+    '^[\s\p{P}]*(?:[Tt]he[\p{Zs}\t]+)?(?:LEA|SEA|FIR|HEL)s?(?:[\x27’]s)?[\s\p{P}]*$',
+]
+anywhere_in = ["ORG"]
+
+# Public job, grant, court and probation systems and app platforms by their
+# names: "USAJOBS", "CM/ECF", "PACER", "myHMCTS", "OASys", "AppStore",
+# "GooglePlay" (guide rule 2, issue #488). Their sites' domains are no
+# organizations by the ORG shape ("Grants.gov").
+[[never]]
+match = "whole"
+words = [
+    "usajobs", "cm/ecf", "ecf", "pacer", "myhmcts", "oasys", "e-verify",
+    "appstore", "googleplay", "playstore",
+]
+unless_named = true
+
+# App platforms in two words: "App Store", "Google Play", "Play Store" are
+# no organization (issue #488); "Apple" or "Google" alone stays.
+[[never]]
+match = "pattern"
+patterns = [
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+)?(?:(?:(?:apple|amazon)[\p{Zs}\t]+)?app[\p{Zs}\t]?store|google[\p{Zs}\t]?play(?:[\p{Zs}\t]?store)?|play[\p{Zs}\t]?store|microsoft[\p{Zs}\t]+store|galaxy[\p{Zs}\t]+store|app[\p{Zs}\t]?gallery)[\s\p{P}]*$',
+]
+anywhere_in = ["ORG"]
+
+# A legal form with no name before it is no company: "a New Jersey limited
+# liability company", "a Delaware corporation", "an English private limited
+# company" (guide rule 2, issue #501): the form in lower case, after a US
+# state or a jurisdiction. "Acme Corporation", "Northvale Ledger limited
+# liability company" and "Quillon Freight LLC, a Wyoming limited liability
+# company" keep their names.
+[[never]]
+match = "pattern"
+patterns = [
+    '''^[\s\p{P}]*(?:(?:[Aa]n?|[Tt]he)[\p{Zs}\t]+)?(?i:(?:alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new[\p{Zs}\t]+hampshire|new[\p{Zs}\t]+jersey|new[\p{Zs}\t]+mexico|new[\p{Zs}\t]+york|north[\p{Zs}\t]+carolina|north[\p{Zs}\t]+dakota|ohio|oklahoma|oregon|pennsylvania|rhode[\p{Zs}\t]+island|south[\p{Zs}\t]+carolina|south[\p{Zs}\t]+dakota|tennessee|texas|utah|vermont|virginia|washington|west[\p{Zs}\t]+virginia|wisconsin|wyoming|district[\p{Zs}\t]+of[\p{Zs}\t]+columbia|puerto[\p{Zs}\t]+rico|u\.[\p{Zs}\t]?s\.|us|u\.[\p{Zs}\t]?k\.|uk|english|welsh|scottish|irish|british|canadian|ontario|jersey|guernsey|cayman[\p{Zs}\t]+islands|british[\p{Zs}\t]+virgin[\p{Zs}\t]+islands|bvi|luxembourg|dutch|german|french|swiss|cypriot|maltese)[\p{Zs}\t]+)(?:(?:domestic|foreign|nonprofit|non-profit|not-for-profit|professional|public[\p{Zs}\t]+benefit|private|public|close|business|statutory|general|limited)[\p{Zs}\t]+)*(?:limited[\p{Zs}\t]+liability[\p{Zs}\t]+(?:company|partnership|limited[\p{Zs}\t]+partnership)|limited[\p{Zs}\t]+(?:company|partnership)|corporation|partnership|trust|company[\p{Zs}\t]+limited[\p{Zs}\t]+by[\p{Zs}\t]+(?:shares|guarantee))[\s\p{P}]*$''',
+]
+anywhere_in = ["ORG"]
+
+# A treatise by its author and a legal subject is the title of a work, no
+# company: "5 Collier on Bankruptcy", "4 Brindle on Insolvency", "Vell and
+# Ostrand on Contracts" (guide rule 8 and its Examples, issue #501). Other
+# subjects keep a name ("Meals on Wheels").
+[[never]]
+match = "pattern"
+patterns = [
+    '''^[\s\p{P}]*(?:\d{1,3}[\p{Zs}\t]+)?\p{Uppercase}[\p{Alphabetic}\x27’-]+(?:,?[\p{Zs}\t]+(?:(?:and|&)[\p{Zs}\t]+)?\p{Uppercase}[\p{Alphabetic}\x27’-]+){0,3}[\p{Zs}\t]+on[\p{Zs}\t]+(?:the[\p{Zs}\t]+)?(?:Law[\p{Zs}\t]+of[\p{Zs}\t]+)?(?:Bankruptcy|Insolvency|Contracts?|Torts?|Trusts?|Evidence|Damages|Wills|Insurance|Agency|Partnership|Restitution|Equity|Mortgages?|Easements|Defamation|Libel(?:[\p{Zs}\t]+and[\p{Zs}\t]+Slander)?|Negligence|Arbitration|Costs|Copyright|Patents?|Trade[\p{Zs}\t]+Marks|Trademarks|Company[\p{Zs}\t]+Law|Corporations|Securities(?:[\p{Zs}\t]+Regulation)?|Banking|Taxation|Sale[\p{Zs}\t]+of[\p{Zs}\t]+Goods|Landlord[\p{Zs}\t]+and[\p{Zs}\t]+Tenant|Real[\p{Zs}\t]+Property|Property|Conflict[\p{Zs}\t]+of[\p{Zs}\t]+Laws|Pleading|Practice|Injunctions|Judgments|Statutes|Interpretation|Jurisdiction|Criminal[\p{Zs}\t]+Law|Sentencing)[\s\p{P}]*$''',
+]
+anywhere_in = ["ORG"]
+
+# Religions and believers: "his Christian faith", "from Islam to …"
+# (issue #500). "Christian Bale" and "Nazrul Islam" stay.
+[[never]]
+match = "plural"
+words = [
+    "christian", "christianity", "muslim", "moslem", "islam", "islamic", "jew",
+    "jewish", "judaism", "catholic", "catholicism", "protestant", "hindu",
+    "hinduism", "buddhist", "buddhism", "sikh", "sikhism", "mormon", "baptist",
+    "methodist", "lutheran", "anglican", "evangelical", "atheist", "agnostic",
+]
+unless_named = true
+
+# Nationalities, demonyms and citizenship, alone or before a common noun:
+# "Americans", "Maltese lawyer", "American licensed drivers", "United
+# States Citizens", "Citizenry" (issue #492). "Dawn French" and "Mr
+# English" stay; so does a company with any other word ("British Airways").
+[[never]]
+match = "plural"
+words = [
+    "american", "british", "briton", "brit", "english", "welsh", "scottish",
+    "scot", "irish", "european", "african", "asian", "australian", "canadian",
+    "mexican", "chinese", "japanese", "korean", "vietnamese", "thai",
+    "filipino", "indonesian", "malaysian", "indian", "pakistani",
+    "bangladeshi", "afghan", "iranian", "iraqi", "syrian", "lebanese",
+    "israeli", "palestinian", "jordanian", "saudi", "egyptian", "moroccan",
+    "algerian", "tunisian", "libyan", "nigerian", "ghanaian", "kenyan",
+    "ethiopian", "somali", "sudanese", "turkish", "greek", "cypriot",
+    "maltese", "italian", "spanish", "portuguese", "french", "german", "dutch",
+    "belgian", "swiss", "austrian", "polish", "czech", "slovak", "hungarian",
+    "romanian", "bulgarian", "serbian", "croatian", "bosnian", "albanian",
+    "ukrainian", "russian", "belarusian", "armenian", "azerbaijani", "kazakh",
+    "uzbek", "swedish", "norwegian", "danish", "finnish", "icelandic",
+    "estonian", "latvian", "lithuanian", "brazilian", "argentine",
+    "argentinian", "chilean", "colombian", "peruvian", "venezuelan", "cuban",
+    "haitian", "jamaican", "hispanic", "latino", "latina", "citizen",
+    "citizenry", "national", "resident", "united", "state",
+]
+unless_named = true
+
+# Courts and public bodies are never marked (the fixture guide's rule 8):
+# an organization or person span with one of these words anywhere is
+# dropped ("County Court", "Ministry of Justice", "Employment Tribunal",
+# "Ofcom", "HMRC" as a person, "EEOC"; issue #378) unless it has a legal
+# form ("Garden Court Ltd" is a company). Only short names no company
+# shares are listed; the others count alone (below). Also a constabulary.
+[[never]]
+match = "plural"
+words = [
+    "court", "tribunal", "ministry", "registry", "ombudsman", "government",
+    "parliament", "police", "ofcom", "ofgem", "ofwat", "hmrc", "acas",
+    "congress", "legislature", "senate", "judiciary", "probation",
+    "administration", "hmcts", "uksc", "ewca", "ewhc", "ukut", "ukftt",
+    "ukeat", "scotus", "ohrp", "eeoc", "nlrb", "osha", "uspto", "ptab", "cfpb",
+    "uscis", "nhtsa", "constabulary",
+]
+anywhere_in = ["ORG", "PERSON"]
+
+# The same bodies' -ies plurals ("Ministries of Justice").
+[[never]]
+match = "whole"
+words = ["ministries", "registries", "agencies", "constabularies"]
+anywhere_in = ["ORG", "PERSON"]
+
+# Laws are never marked either: an Act, an amendment, a regulation, a
+# statute, a constitution or an ordinance by its title, as an organization
+# or a person ("Gaming Act 1968", "the First Amendment", "Fair Practices
+# Ordinance"; guide rule 8, issue #378). Laws' and treaties' short names
+# count alone (below).
+[[never]]
+match = "plural"
+words = [
+    "act", "amendment", "regulation", "statute", "constitution", "ordinance",
+]
+anywhere_in = ["ORG", "PERSON"]
+
+# Words that make a public body or a place of a person span, though a
+# company may have them ("Northbridge Department Store", "Acme Talent
+# Agency", "Commission Junction"): "Ashmoor County Probation Department"
+# is no one (#378).
+[[never]]
+match = "plural"
+words = [
+    "agency", "bureau", "county", "district", "council", "commission",
+]
+anywhere_in = ["PERSON"]
+
+# Department words also end private departments, not company names (#506).
+[[never]]
+match = "plural"
+words = ["department", "office", "board", "division"]
+anywhere_in = ["PERSON"]
+last_word_of = ["ORG"]
+
+# Public bodies, laws and courts by their phrases, as an organization or a
+# person (issue #378). A legal form keeps a company; words in quotes are a
+# name.
+[[never]]
+match = "pattern"
+patterns = [
+    # Departments, offices, agencies, bureaus, commissions and boards of a
+    # state or the Crown: "Department of Justice", "Dep't of Labor",
+    # "Probation Department", "Office of the Attorney General", "Home
+    # Office", "Clerk's Office", "Agency for …", "National Security Agency",
+    # "Bureau of Prisons", "Federal Election Commission", "Securities and
+    # Exchange Commission", "National Labor Relations Board", "Board of
+    # Education".
+    '(?i)\bdep(?:artments?|ts?\.?|[\x27’]t)[\p{Zs}\t]+(?:of|for)\b',
+    '(?i)\b(?:police|sheriff[\x27’]?s|probation|fire|health|home|state|county|city|treasury|justice|corrections?|correctional|revenue|transportation|labou?r|education|defen[cs]e|homeland[\p{Zs}\t]+security)[\p{Zs}\t]+departments?\b',
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+)?(?:(?:u\.[\p{Zs}\t]?s\.|united[\p{Zs}\t]+states|state|county|city|federal)[\p{Zs}\t]+)?offices?[\p{Zs}\t]+(?:of|for)\b',
+    '(?i)\b(?:home|foreign|cabinet|war|colonial|patent|passport|(?:attorney|sheriff|comptroller|commissioner|prosecutor|defender|coroner|clerk|registrar|governor|mayor|attorney[\p{Zs}\t]+general|inspector[\p{Zs}\t]+general)[\x27’]s?)[\p{Zs}\t]+office\b',
+    '(?i)\bagenc(?:y|ies)[\p{Zs}\t]+(?:of|for)\b',
+    '(?i)\b(?:federal|national|state|environment(?:al)?|intelligence|defen[cs]e|regulatory|government(?:al)?|enforcement|revenue|central|border|nuclear|space)(?:[\p{Zs}\t]+\p{Alphabetic}+){0,2}[\p{Zs}\t]+agenc(?:y|ies)\b',
+    '(?i)\bbureaus?[\p{Zs}\t]+of\b',
+    '(?i)\b(?:federal|national|census|government|state|county|city|consumer[\p{Zs}\t]+financial[\p{Zs}\t]+protection)[\p{Zs}\t]+bureau\b',
+    '(?i)\b(?:federal|national|state|securities|trade|election|electoral|communications|equal|law|charity|public|utilit(?:y|ies)|civil[\p{Zs}\t]+service|european|international|gaming|gambling|planning|zoning|county|city|human[\p{Zs}\t]+rights|civil[\p{Zs}\t]+rights|energy|regulatory|commodity|maritime|nuclear|parole|insurance|labou?r|competition|ethics|transportation|liquor|lottery|boundary|forestry|judicial|sentencing|information)(?:[\p{Zs}\t]+\p{Alphabetic}+){0,3}[\p{Zs}\t]+commissions?\b|^[\s\p{P}]*(?:the[\p{Zs}\t]+)?commissions?[\p{Zs}\t]+(?:on|of|for)\b',
+    '(?i)\bboards?[\p{Zs}\t]+of[\p{Zs}\t]+(?:education|elections?|supervisors|selectmen|aldermen|county[\p{Zs}\t]+commissioners|immigration[\p{Zs}\t]+appeals|tax[\p{Zs}\t]+appeals|veterans|governors[\p{Zs}\t]+of[\p{Zs}\t]+the[\p{Zs}\t]+federal|parole|pardons|health|regents|registration|medicine|medical|nursing|pharmacy|equalization|zoning|review)\b',
+    '(?i)\b(?:national|federal|state|county|city|municipal|parole|zoning|planning|school|merit[\p{Zs}\t]+systems[\p{Zs}\t]+protection|surface[\p{Zs}\t]+transportation|patent[\p{Zs}\t]+trial[\p{Zs}\t]+and[\p{Zs}\t]+appeal|immigration|federal[\p{Zs}\t]+reserve)(?:[\p{Zs}\t]+\p{Alphabetic}+){0,3}[\p{Zs}\t]+boards?\b',
+    # Services, councils and the Treasury of a state: "Internal Revenue
+    # Service", "Crown Prosecution Service", "City Council", "HM Treasury",
+    # "HM Land Registry", "His Majesty's Revenue and Customs".
+    '(?i)\b(?:internal[\p{Zs}\t]+revenue|postal|secret|marshals?|forest|national[\p{Zs}\t]+park|prison|probation|immigration|customs|border|crown[\p{Zs}\t]+prosecution|civil|foreign|national[\p{Zs}\t]+health|public[\p{Zs}\t]+health|child[\p{Zs}\t]+protective|social|health[\p{Zs}\t]+and[\p{Zs}\t]+human|citizenship[\p{Zs}\t]+and[\p{Zs}\t]+immigration|fish[\p{Zs}\t]+and[\p{Zs}\t]+wildlife|courts[\p{Zs}\t]+and[\p{Zs}\t]+tribunals)[\p{Zs}\t]+services?\b',
+    '(?i)\binternal[\p{Zs}\t]+revenue\b|\brevenue[\p{Zs}\t]+(?:and|&)[\p{Zs}\t]+customs\b',
+    '(?i)\b(?:city|county|borough|district|parish|town|metropolitan|municipal|privy|security)[\p{Zs}\t]+council\b',
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+|hm[\p{Zs}\t]+|h\.m\.[\p{Zs}\t]+|u\.[\p{Zs}\t]?s\.[\p{Zs}\t]+|united[\p{Zs}\t]+states[\p{Zs}\t]+)?treasury(?:[\p{Zs}\t]+department)?[\s\p{P}]*$',
+    '(?i)^[\s\p{P}]*(?:hm|h\.m\.|(?:her|his)[\p{Zs}\t]+majesty[\x27’]s)[\p{Zs}\t]+(?:treasury|revenue|courts|prison|land|government|customs|inspectorate|coastguard|passport|procurator|chief|attorney|crown|stationery|forces)\b',
+    # Prosecutors and ministers alone: "Attorney General", "U.S. Attorney",
+    # "District Attorney", "Secretary of State" ("Attorney General Quill" is
+    # a person with a title).
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+)?(?:(?:u\.[\p{Zs}\t]?s\.|united[\p{Zs}\t]+states|district|state[\x27’]?s?|county|city|prosecuting)[\p{Zs}\t]+attorneys?|attorneys?[\p{Zs}\t-]+generals?|secretary[\p{Zs}\t]+of[\p{Zs}\t]+state)(?:[\x27’]s?)?[\s\p{P}]*$',
+    # Courts by their circuits, districts and divisions: "1st Cir.", "Ninth
+    # Circuit", "Northern District of …", "Chancery Division".
+    '(?i)(?:^|[\s\p{P}])(?:\d+(?:st|nd|rd|th)|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|d\.[\p{Zs}\t]?c\.|federal)[\p{Zs}\t]+cir(?:cuit\b|\.|[\s\p{P}]|$)',
+    '(?i)\b(?:northern|southern|eastern|western|middle|central)[\p{Zs}\t]+district\b|\bdistricts?[\p{Zs}\t]+(?:of|attorney)\b',
+    '(?i)\b(?:chancery|family|appellate|civil|criminal|king[\x27’]s[\p{Zs}\t]+bench|queen[\x27’]s[\p{Zs}\t]+bench)[\p{Zs}\t]+division\b|^[\s\p{P}]*(?:the[\p{Zs}\t]+)?divisions?[\p{Zs}\t]+of\b',
+    # Short names that companies share count alone only: "the IRS", "SEC",
+    # "ET", "EAT", "NASA", "BLM" (but "CMA CGM", "SEC Newgate").
+    '^[\s\p{P}]*(?:[Tt]he[\p{Zs}\t]+)?(?:U\.?S\.?[\p{Zs}\t]+)?(?:DOJ|IRS|FBI|DHS|HHS|FTC|FCC|FDA|EPA|DWP|FCA|CMA|SFO|DEA|ATF|FAA|NTSB|USDA|NIH|CDC|SEC|ICO|CPS|EAT|ET|NASA|BLM|STB|CEQ|USGS|AGFD|DPP)(?:[\x27’]s?)?[\s\p{P}]*$',
+    # Codes and rules of law: "Bankruptcy Code", "Code of Federal
+    # Regulations", "18 U.S.C.", "Civil Procedure Rules", "Federal Rules of
+    # Evidence".
+    '(?i)\b(?:bankruptcy|revenue|penal|civil|criminal|commercial|tax|labou?r|vehicle|insurance|professions|family|probate|evidence|procedure|government|administrative|federal|state|u\.[\p{Zs}\t]?s\.|united[\p{Zs}\t]+states|municipal|building|education|corporations|judicial|elections?)[\p{Zs}\t]+code\b',
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+)?code[\p{Zs}\t]+of\b',
+    '(?i)(?:^|[\s\p{P}\p{N}])(?:u\.[\p{Zs}\t]?s\.[\p{Zs}\t]?c|c\.[\p{Zs}\t]?f\.[\p{Zs}\t]?r|u\.[\p{Zs}\t]?c\.[\p{Zs}\t]?c|ilcs)(?:[\s\p{P}]|$)',
+    '(?i)\brules[\p{Zs}\t]+of[\p{Zs}\t]+(?:civil|criminal|evidence|appellate|professional|court|procedure)\b|\b(?:civil|criminal)[\p{Zs}\t]+procedure[\p{Zs}\t]+rules\b',
+]
+anywhere_in = ["ORG", "PERSON"]
+
+# More public bodies, laws and treaties by their phrases, as an
+# organization or a person (probe round 2 of issue #378). A legal form
+# keeps a company ("Customs Brokers Inc", "Treaty Oak Capital LLC").
+[[never]]
+match = "pattern"
+patterns = [
+    # Customs alone, and the agency: "Customs", "U.S. Customs", "Customs
+    # and Border Protection".
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+)?(?:u\.[\p{Zs}\t]?s\.[\p{Zs}\t]+|united[\p{Zs}\t]+states[\p{Zs}\t]+|hm[\p{Zs}\t]+)?customs(?:[\p{Zs}\t]+(?:service|office|authorit(?:y|ies)))?[\x27’]?s?[\s\p{P}]*$',
+    '(?i)\bcustoms[\p{Zs}\t]+(?:and|&)[\p{Zs}\t]+border[\p{Zs}\t]+protection\b',
+    # Jails, and a grand jury that ends the span or is followed by its
+    # jurisdiction: "Elko County Jail", "the Grand Jury", "the Ashmoor
+    # County Grand Jury", "Grand Jury of Ashmoor County" ("Grand Jury
+    # Games" stays). The Electoral College and the College of Policing.
+    '(?i)\b(?:county|city|municipal|parish|state|federal)[\p{Zs}\t]+(?:jail|detention[\p{Zs}\t]+(?:center|centre|facility)|penitentiary)\b',
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+)?(?:\p{Alphabetic}+[\p{Zs}\t]+){0,2}grand[\p{Zs}\t]+jur(?:y|ies)(?:[\x27’]s?)?(?:[\p{Zs}\t]+(?:of|for|in[\p{Zs}\t]+and[\p{Zs}\t]+for)[\p{Zs}\t]+\S.*)?[\s\p{P}]*$',
+    '(?i)\belectoral[\p{Zs}\t]+colleges?\b|\bcollege[\p{Zs}\t]+of[\p{Zs}\t]+policing\b',
+    # Agencies' and intergovernmental bodies' short names as written, the
+    # whole span or before their organ, adjectives allowed ("NATO", "the
+    # IMF", "ICAO Council", "NATO Parliamentary Assembly", "IMF Executive
+    # Board"; "Nato Venn" and "NATO Logistics" stay), and laws' and
+    # treaties' short names as written, alone ("FLSA", "the FDCPA",
+    # "CAFTA-DR").
+    '^[\s\p{P}]*(?:[Tt]he[\p{Zs}\t]+)?(?:USFWS|NMFS|ICAO|IMF|NATO|SIECA|CCAD)(?:[\x27’]s?)?(?:[\p{Zs}\t]+(?:\p{Uppercase}\p{Alphabetic}+[\p{Zs}\t]+){0,2}(?:Council|Assembly|Secretariat|Board|Committee|Commission|Command|Headquarters|Summit|Staff))?[\s\p{P}]*$',
+    '^[\s\p{P}]*(?:[Tt]he[\p{Zs}\t]+)?(?:FLSA|FDCPA|TCPA|DTPA|PHRA|NYDCL|ERISA|HIPAA|FMLA|ECHR|CAFTA-DR|CAFTA|NAFTA|USMCA)(?:[\x27’]s?)?[\s\p{P}]*$',
+    # A court's division in a caption ("TEXARKANA DIVISION") and a state's
+    # divisions ("Utah Division of Wildlife Resources").
+    '\b\p{Uppercase}{2,}[\p{Zs}\t]+DIVISIONS?\b',
+    '(?i)\bdivisions?[\p{Zs}\t]+of[\p{Zs}\t]+(?:wildlife|natural|motor|corporations|water|forestry|parks|fish|child|family|human|consumer|enforcement|insurance|securities|banking|labou?r|workers|unemployment|elections|revenue|taxation|state|public)\b',
+    # A board or the Central Office alone: "the Board", "issued out of the
+    # Central Office"; the Home Department ("Secretary of State for the
+    # Home Department"); the Director of Public Prosecutions.
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+)?(?:boards?|central[\p{Zs}\t]+office)[\x27’]?s?[\s\p{P}]*$',
+    '(?i)\bhome[\p{Zs}\t]+department\b|\bdirector[\p{Zs}\t]+of[\p{Zs}\t]+public[\p{Zs}\t]+prosecutions\b',
+    # Treaties, conventions and agreements by title: "Dunmere Trade
+    # Agreement", "Agreement on Trade", "Lugano Convention", "Convention on
+    # Human Rights", "Treaty of Rome", "Brussels I", the "Environment
+    # Chapter" of a trade agreement ("Treaty Oak Capital" and "Ashmoor
+    # Convention Center" stay).
+    '(?i)\b(?:treat(?:y|ies)|conventions?|agreements?)(?:[\p{Zs}\t]+(?:on|of|for|between|against|establishing|relating)\b|[\s\p{P}]*$)',
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+)?(?:brussels|rome|lugano)[\p{Zs}\t]+(?:i{1,3}a?|iv|bis|recast)(?:[\p{Zs}\t]+(?:bis|recast|regulation|convention)s?)*[\s\p{P}]*$',
+    '(?i)\b(?:environment(?:al)?|labou?r|investment|trade|dispute[\p{Zs}\t]+settlement|intellectual[\p{Zs}\t]+property)[\p{Zs}\t]+chapters?\b',
+    # Rules of procedure and their citations: "Federal Rules of Bankruptcy
+    # Procedure", "Tex. R. App. P.", "Fed. R. Civ. P.".
+    '(?i)\brules[\p{Zs}\t]+of(?:[\p{Zs}\t]+\p{Alphabetic}+){1,3}[\p{Zs}\t]+(?:procedure|evidence|practice)\b',
+    '(?i)(?:^|[\s\p{P}])r\.[\p{Zs}\t]?(?:app|civ|crim|evid|bankr)\.(?:[\p{Zs}\t]?p\.)?',
+    # Laws whose head is "Law": "New York Executive Law", "Criminal
+    # Procedure Law", "Debtor and Creditor Law" ("Quill Tax Law" may be a
+    # firm, and stays).
+    '(?i)\b(?:executive|criminal[\p{Zs}\t]+procedure|civil[\p{Zs}\t]+practice|penal|general[\p{Zs}\t]+obligations|general[\p{Zs}\t]+business|business[\p{Zs}\t]+corporation|debtor[\p{Zs}\t]+and[\p{Zs}\t]+creditor|real[\p{Zs}\t]+property|social[\p{Zs}\t]+services|public[\p{Zs}\t]+health|vehicle[\p{Zs}\t]+and[\p{Zs}\t]+traffic|environmental[\p{Zs}\t]+conservation|correction|judiciary|administrative[\p{Zs}\t]+procedure)[\p{Zs}\t]+law\b',
+    # A bill by its number: "SB 8", "H.B. 1234".
+    '^[\s\p{P}]*(?:[Tt]he[\p{Zs}\t]+)?[SHA]\.?[\p{Zs}\t]?B\.?[\p{Zs}\t]*\d{1,5}[\s\p{P}]*$',
+]
+anywhere_in = ["ORG", "PERSON"]
+
+# Universities and colleges are never public bodies, whoever owns them:
+# a span that names one itself, after capitalized words only ("Ashmoor
+# State University", "University of Ashmoor", "Ashmoor County Community
+# College"; #484). "Ministry of Colleges and Universities" names none, and
+# the Electoral College and the College of Policing are public bodies.
+[[private]]
+patterns = [
+    '^[\s\p{P}]*(?:[Tt]he[\p{Zs}\t]+)?(?:\p{Uppercase}[\p{Alphabetic}.\x27’&-]*[\p{Zs}\t]+){0,5}(?:University|College|UNIVERSITY|COLLEGE)\b',
+]
+unless = ['(?i)\belectoral[\p{Zs}\t]+college|\bcollege[\p{Zs}\t]+of[\p{Zs}\t]+policing\b']
+
+# The same prosecutors and ministers within an organization's name
+# ("Attorney General's Office", "Office of the Secretary of State").
+[[never]]
+match = "pattern"
+patterns = [
+    '(?i)\battorneys?[\p{Zs}\t-]+generals?\b|\bsecretary[\p{Zs}\t]+of[\p{Zs}\t]+state\b',
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+)?(?:u\.[\p{Zs}\t]?s\.|united[\p{Zs}\t]+states|district|state[\x27’]?s?|county|city|prosecuting)[\p{Zs}\t]+attorneys?\b',
+]
+anywhere_in = ["ORG"]
+
+# A bar number's label belongs to the number: the model's organization
+# "Ohio State Bar" in "Ohio State Bar No. 0099911" grows to the whole of
+# it, and the never pattern below takes it (#484, item 3; #483).
+[[span]]
+category = "ORG"
+extend = [
+    '\b(?:\p{Uppercase}[\p{Alphabetic}.]*[\p{Zs}\t]+){0,3}(?:Bar|BAR)[\p{Zs}\t]*(?:No\.?|NO\.?|Number|NUMBER|#)[\p{Zs}\t:#.]*\d+',
+]
+
+# An attorney's bar number with its label is no organization: the model's
+# "Texas State Bar No. 12345" goes, and its number is IDENTITY by its label
+# (the maintainer's decision on #484, item 3; #483).
+[[never]]
+match = "pattern"
+patterns = ['(?i)\bbar[\p{Zs}\t]*(?:no\.?|number|#)[\p{Zs}\t:#.]*\d']
+anywhere_in = ["ORG", "PERSON"]
+
+# A country, state or city is a place, not an organization: alone, several
+# together, or as both sides of a caption ("Pakistan", "Illinois", "United
+# States", the "U.S." of "18 U.S.C.", "Boston", "Georgia v. Alabama"), and
+# so are "State", "States" and "Federal" alone (guide rules 2 and 3, issue
+# #478). Any other word keeps the name ("Bank of America", "State Street",
+# "New York Life", "Georgia-Pacific", "The Republic of Tea"). So does a
+# place after "State of", "Town of" and the like ("State of Ashmoria",
+# "People of the State of …", "District of Columbia") and a county by its
+# name ("Ashmoor County"). A person keeps these names ("Georgia Quill").
+# Cities are the largest only: "Phoenix" or "Mobile" alone names a company
+# as often.
+[[never]]
+match = "pattern"
+patterns = [
+    '''(?ix) ^[\s\p{P}]* (?: (?:
+        the | of | and | v | vs | people | state | states | federal
+        | commonwealth | nation | republic | kingdom | united[\p{Zs}\t]+states
+        | united[\p{Zs}\t]+kingdom | united[\p{Zs}\t]+nations | america | usa
+        | u\.[\p{Zs}\t]?s\.?(?:[\p{Zs}\t]?a\.?)? | us | uk | u\.[\p{Zs}\t]?k\.? | eu
+        | european[\p{Zs}\t]+union | europe | great[\p{Zs}\t]+britain | britain
+        | england | wales | scotland | northern[\p{Zs}\t]+ireland | ireland
+        | d\.[\p{Zs}\t]?c\.?
+        | alabama | alaska | arizona | arkansas | california | colorado
+        | connecticut | delaware | florida | georgia | hawaii | idaho | illinois
+        | indiana | iowa | kansas | kentucky | louisiana | maine | maryland
+        | massachusetts | michigan | minnesota | mississippi | missouri | montana
+        | nebraska | nevada | new[\p{Zs}\t]+hampshire | new[\p{Zs}\t]+jersey
+        | new[\p{Zs}\t]+mexico | new[\p{Zs}\t]+york | north[\p{Zs}\t]+carolina
+        | north[\p{Zs}\t]+dakota | ohio | oklahoma | oregon | pennsylvania
+        | rhode[\p{Zs}\t]+island | south[\p{Zs}\t]+carolina | south[\p{Zs}\t]+dakota
+        | tennessee | texas | utah | vermont | virginia | washington
+        | west[\p{Zs}\t]+virginia | wisconsin | wyoming
+        | district[\p{Zs}\t]+of[\p{Zs}\t]+columbia | puerto[\p{Zs}\t]+rico | guam
+        | american[\p{Zs}\t]+samoa | virgin[\p{Zs}\t]+islands
+        | northern[\p{Zs}\t]+mariana[\p{Zs}\t]+islands
+        | afghanistan | albania | algeria | andorra | angola
+        | antigua(?:[\p{Zs}\t]+and[\p{Zs}\t]+barbuda)? | argentina | armenia
+        | australia | austria | azerbaijan | bahamas | bahrain | bangladesh
+        | barbados | belarus | belgium | belize | benin | bermuda | bhutan
+        | bolivia | bosnia(?:[\p{Zs}\t]+and[\p{Zs}\t]+herzegovina)? | botswana
+        | brazil | brunei | bulgaria | burkina[\p{Zs}\t]+faso | burma | burundi
+        | cabo[\p{Zs}\t]+verde | cape[\p{Zs}\t]+verde | cambodia | cameroon | canada
+        | cayman[\p{Zs}\t]+islands | central[\p{Zs}\t]+african[\p{Zs}\t]+republic
+        | chad | chile | china | colombia | comoros | congo | costa[\p{Zs}\t]+rica
+        | côte[\p{Zs}\t]+d[\x27’]ivoire | ivory[\p{Zs}\t]+coast | croatia | cuba
+        | cyprus | czechia | czech[\p{Zs}\t]+republic | denmark | djibouti
+        | dominica | dominican[\p{Zs}\t]+republic | east[\p{Zs}\t]+timor
+        | timor-leste | ecuador | egypt | el[\p{Zs}\t]+salvador
+        | equatorial[\p{Zs}\t]+guinea | eritrea | estonia | eswatini | ethiopia
+        | fiji | finland | france | gabon | gambia | germany | ghana | gibraltar
+        | greece | greenland | grenada | guatemala | guinea | guinea-bissau
+        | guyana | haiti | holland | honduras | hong[\p{Zs}\t]+kong | hungary
+        | iceland | india | indonesia | iran | iraq | isle[\p{Zs}\t]+of[\p{Zs}\t]+man
+        | israel | italy | jamaica | japan | jordan | kazakhstan | kenya
+        | kiribati | korea | south[\p{Zs}\t]+korea | north[\p{Zs}\t]+korea | kosovo
+        | kuwait | kyrgyzstan | laos | latvia | lebanon | lesotho | liberia
+        | libya | liechtenstein | lithuania | luxembourg | macau | macao
+        | macedonia | north[\p{Zs}\t]+macedonia | madagascar | malawi | malaysia
+        | maldives | mali | malta | marshall[\p{Zs}\t]+islands | mauritania
+        | mauritius | mexico | micronesia | moldova | monaco | mongolia
+        | montenegro | morocco | mozambique | myanmar | namibia | nauru | nepal
+        | netherlands | new[\p{Zs}\t]+zealand | nicaragua | niger | nigeria
+        | norway | oman | pakistan | palau | palestine | panama
+        | papua[\p{Zs}\t]+new[\p{Zs}\t]+guinea | paraguay | peru | philippines
+        | poland | portugal | qatar | romania | russia | russian[\p{Zs}\t]+federation
+        | rwanda | saint[\p{Zs}\t]+kitts(?:[\p{Zs}\t]+and[\p{Zs}\t]+nevis)?
+        | saint[\p{Zs}\t]+lucia | saint[\p{Zs}\t]+vincent | samoa
+        | san[\p{Zs}\t]+marino | são[\p{Zs}\t]+tomé | sao[\p{Zs}\t]+tome
+        | saudi[\p{Zs}\t]+arabia | senegal | serbia | seychelles
+        | sierra[\p{Zs}\t]+leone | singapore | slovakia | slovenia
+        | solomon[\p{Zs}\t]+islands | somalia | south[\p{Zs}\t]+africa
+        | south[\p{Zs}\t]+sudan | spain | sri[\p{Zs}\t]+lanka | sudan | suriname
+        | sweden | switzerland | syria | taiwan | tajikistan | tanzania | thailand
+        | togo | tonga | trinidad | tobago | tunisia | turkey | türkiye
+        | turkmenistan | tuvalu | uganda | ukraine
+        | united[\p{Zs}\t]+arab[\p{Zs}\t]+emirates | uae | uruguay | uzbekistan
+        | vanuatu | vatican | venezuela | vietnam | yemen | zambia | zimbabwe
+        | new[\p{Zs}\t]+york[\p{Zs}\t]+city | los[\p{Zs}\t]+angeles | chicago
+        | houston | philadelphia | san[\p{Zs}\t]+antonio | san[\p{Zs}\t]+diego
+        | dallas | san[\p{Zs}\t]+jose | austin | jacksonville
+        | san[\p{Zs}\t]+francisco | indianapolis | seattle | denver | boston
+        | detroit | nashville | memphis | baltimore | milwaukee | albuquerque
+        | tucson | fresno | sacramento | atlanta | miami | oakland | minneapolis
+        | cleveland | new[\p{Zs}\t]+orleans | pittsburgh | st\.?[\p{Zs}\t]+louis
+        | cincinnati | tampa | honolulu | las[\p{Zs}\t]+vegas
+        | salt[\p{Zs}\t]+lake[\p{Zs}\t]+city | kansas[\p{Zs}\t]+city | newark
+        | omaha | raleigh | charlotte | london | manchester | birmingham | leeds
+        | liverpool | bristol | sheffield | newcastle | nottingham | leicester
+        | cardiff | edinburgh | glasgow | belfast | southampton | coventry | paris
+        | berlin | moscow | tokyo | beijing | toronto | sydney | dublin | brussels
+        | geneva
+    ) (?:[\s\p{P}]+|$) )+ $''',
+    '^[\s\p{P}]*(?i:the[\p{Zs}\t]+)?(?i:people[\p{Zs}\t]+of[\p{Zs}\t]+(?:the[\p{Zs}\t]+)?)?(?i:state|states|commonwealth|city|town|village|borough|county|township|parish|district)[\p{Zs}\t]+(?i:of)[\p{Zs}\t]+(?i:the[\p{Zs}\t]+)?\p{Uppercase}[^\s\p{P}]*(?:[\p{Zs}\t]+\p{Uppercase}[^\s\p{P}]*){0,2}[\s\p{P}]*$',
+    '^[\s\p{P}]*(?:[Tt]he[\p{Zs}\t]+)?(?:\p{Uppercase}[\p{Alphabetic}\x27’.-]*[\p{Zs}\t]+){1,3}(?i:county|parish|township|borough)[\s\p{P}]*$',
+]
+anywhere_in = ["ORG"]
+
+# A place's name after "City of", "Town of" and the like belongs to it, so
+# the place goes whole: the model's "Brindle" in "Town of Brindle", as an
+# organization (issue #478).
+[[span]]
+category = "ORG"
+extend = [
+    '\b(?:City|Town|Village|Borough|County|Township|Parish|State|Commonwealth)[\p{Zs}\t]+of[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}\x27’-]*(?:[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}\x27’-]*)?',
+]
+
+# The same for a person: "Town of Plymouth" names no one (issue #478).
+[[span]]
+category = "PERSON"
+extend = [
+    '\b(?:City|Town|Village|Borough|County|Township|Parish|State|Commonwealth)[\p{Zs}\t]+of[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}\x27’-]*(?:[\p{Zs}\t]+\p{Uppercase}[\p{Alphabetic}\x27’-]*)?',
+]
+
+# A place after "State of", "Town of" and the like is no person
+# (issue #478).
+[[never]]
+match = "pattern"
+patterns = [
+    '(?i)^[\s\p{P}]*(?:the[\p{Zs}\t]+)?(?:city|town|village|borough|county|township|parish|state|commonwealth)[\p{Zs}\t]+of[\p{Zs}\t]',
+]
+anywhere_in = ["PERSON"]
+
+# The second word of a two-word place is no one: the model's "York" in "New
+# York" grows to the place, which goes ("San Francisco", "St. Louis",
+# "North Carolina"; guide rule 1, issue #500). "John York" stays a person.
+[[span]]
+category = "PERSON"
+extend = [
+    '\b(?:New[\p{Zs}\t]+(?:York(?:[\p{Zs}\t]+City)?|Jersey|Hampshire|Mexico|Orleans|Zealand)|San[\p{Zs}\t]+(?:Francisco|Diego|Jose|José|Antonio|Marino)|Los[\p{Zs}\t]+Angeles|Las[\p{Zs}\t]+Vegas|St\.?[\p{Zs}\t]+Louis|Saint[\p{Zs}\t]+Louis|Hong[\p{Zs}\t]+Kong|Rhode[\p{Zs}\t]+Island|(?:North|South)[\p{Zs}\t]+(?:Carolina|Dakota)|West[\p{Zs}\t]+Virginia|Salt[\p{Zs}\t]+Lake[\p{Zs}\t]+City|Kansas[\p{Zs}\t]+City|Sri[\p{Zs}\t]+Lanka|Costa[\p{Zs}\t]+Rica|Puerto[\p{Zs}\t]+Rico|El[\p{Zs}\t]+Salvador|Saudi[\p{Zs}\t]+Arabia|Sierra[\p{Zs}\t]+Leone)\b',
+]
+
+# The same places whole are no person either, unless a title makes the
+# place a surname ("Ms St. Louis").
+[[never]]
+match = "pattern"
+patterns = [
+    '^[\s\p{P}]*(?:[Tt]he[\p{Zs}\t]+)?(?:New[\p{Zs}\t]+(?:York(?:[\p{Zs}\t]+City)?|Jersey|Hampshire|Mexico|Orleans|Zealand)|San[\p{Zs}\t]+(?:Francisco|Diego|Jose|José|Antonio|Marino)|Los[\p{Zs}\t]+Angeles|Las[\p{Zs}\t]+Vegas|St\.?[\p{Zs}\t]+Louis|Saint[\p{Zs}\t]+Louis|Hong[\p{Zs}\t]+Kong|Rhode[\p{Zs}\t]+Island|(?:North|South)[\p{Zs}\t]+(?:Carolina|Dakota)|West[\p{Zs}\t]+Virginia|Salt[\p{Zs}\t]+Lake[\p{Zs}\t]+City|Kansas[\p{Zs}\t]+City|Sri[\p{Zs}\t]+Lanka|Costa[\p{Zs}\t]+Rica|Puerto[\p{Zs}\t]+Rico|El[\p{Zs}\t]+Salvador|Saudi[\p{Zs}\t]+Arabia|Sierra[\p{Zs}\t]+Leone)[\s\p{P}]*$',
+]
+anywhere_in = ["PERSON"]
+unless_titled = true
+
+# A caption's opening words stay outside a party's span: "In re Quill", "In
+# the Matter of Quill" and "Ex parte Quill" are "Quill" (guide rule 1, issue
+# #500).
+[[span]]
+category = "PERSON"
+trim = ["in re", "in the matter of", "ex parte"]
+
+# The same for an organization ("In re Quillon Freight LLC").
+[[span]]
+category = "ORG"
+trim = ["in re", "in the matter of", "ex parte"]
+
+# English legal forms mark a manual selection as an organization
+# ("Acme Ltd.").
+[[shape]]
+category = "ORG"
+guess_words = ["LLC", "LLP", "Ltd", "Inc", "Corp", "Co", "PLC"]
+
+# "U.S." and "U.K." alone are a country, never a company or a person: "527
+# U.S. 706", "U.S. District Court" (guide rules 1, 2 and 8, issue #499).
+# "U.S. Bank" keeps its name.
+[[shape]]
+category = "ORG"
+forbid = ['^\s*U\.\s?[SK]\.(?:\s?A\.)?\s*$']
+
+# The same as a person.
+[[shape]]
+category = "PERSON"
+forbid = ['^\s*U\.\s?[SK]\.(?:\s?A\.)?\s*$']
+
+# Fictitious parties are placeholders, never marked (guide rule 8, the
+# maintainer's decision on #484, item 1): "John Doe", "Jane Does 1-25",
+# "Richard Roe", "DOE SUPERVISORS I-X", "DOE MEDICAL STAFF I-X", "ROE
+# ENTITIES", "DOES I through X", and a bare range after them ("I-X",
+# "1-25"). Role words are listed, so "Doe Run Company" stays a company.
+# Alone, a placeholder is in capitals or plural ("DOE", "ROE", "the
+# Does"): "Mr Doe", "J. Doe" and "Samuel Doe" stay people.
+[[shape]]
+category = "PERSON"
+forbid = [
+    '^[\s\p{P}]*(?:DOES?|ROES?|Does|Roes)[\s\p{P}]*$',
+    '^[\s\p{P}]*(?i:john|jane|richard|mary)[\p{Zs}\t]+(?i:does?|roes?)(?:[\p{Zs}\t]+(?i:defendants|entities|corporations|companies|businesses|individuals|persons|officers|supervisors|employees|agents|deputies|medical|staff|nurses|doctors|physicians|partnerships|insurers|contractors|guards|correctional|members|parties)){0,3}(?:[\p{Zs}\t]+(?:\d{1,3}(?:[\p{Zs}\t]*(?:[-–]|(?i:through|thru|to))[\p{Zs}\t]*\d{1,3})?|[IVXLCl\d]{1,6}[\p{Zs}\t]*(?:[-–]|(?i:through|thru|to))[\p{Zs}\t]*[IVXLC\d]{1,6}))?[\s\p{P}]*$',
+    '^[\s\p{P}]*(?i:does?|roes?)(?:(?:[\p{Zs}\t]+(?i:defendants|entities|corporations|companies|businesses|individuals|persons|officers|supervisors|employees|agents|deputies|medical|staff|nurses|doctors|physicians|partnerships|insurers|contractors|guards|correctional|members|parties)){1,3}(?:[\p{Zs}\t]+(?:\d{1,3}(?:[\p{Zs}\t]*(?:[-–]|(?i:through|thru|to))[\p{Zs}\t]*\d{1,3})?|[IVXLCl\d]{1,6}[\p{Zs}\t]*(?:[-–]|(?i:through|thru|to))[\p{Zs}\t]*[IVXLC\d]{1,6}))?|[\p{Zs}\t]+(?:\d{1,3}(?:[\p{Zs}\t]*(?:[-–]|(?i:through|thru|to))[\p{Zs}\t]*\d{1,3})?|[IVXLCl\d]{1,6}[\p{Zs}\t]*(?:[-–]|(?i:through|thru|to))[\p{Zs}\t]*[IVXLC\d]{1,6}))[\s\p{P}]*$',
+    '^[\s\p{P}]*(?:[IVXLC]{1,6}|\d{1,3})[\p{Zs}\t]*(?:[-–]|(?i:through|thru))[\p{Zs}\t]*(?:[IVXLC]{1,6}|\d{1,3})[\s\p{P}]*$',
+]
+
+# The same placeholders as an organization.
+[[shape]]
+category = "ORG"
+forbid = [
+    '^[\s\p{P}]*(?:DOES?|ROES?|Does|Roes)[\s\p{P}]*$',
+    '^[\s\p{P}]*(?i:john|jane|richard|mary)[\p{Zs}\t]+(?i:does?|roes?)(?:[\p{Zs}\t]+(?i:defendants|entities|corporations|companies|businesses|individuals|persons|officers|supervisors|employees|agents|deputies|medical|staff|nurses|doctors|physicians|partnerships|insurers|contractors|guards|correctional|members|parties)){0,3}(?:[\p{Zs}\t]+(?:\d{1,3}(?:[\p{Zs}\t]*(?:[-–]|(?i:through|thru|to))[\p{Zs}\t]*\d{1,3})?|[IVXLCl\d]{1,6}[\p{Zs}\t]*(?:[-–]|(?i:through|thru|to))[\p{Zs}\t]*[IVXLC\d]{1,6}))?[\s\p{P}]*$',
+    '^[\s\p{P}]*(?i:does?|roes?)(?:(?:[\p{Zs}\t]+(?i:defendants|entities|corporations|companies|businesses|individuals|persons|officers|supervisors|employees|agents|deputies|medical|staff|nurses|doctors|physicians|partnerships|insurers|contractors|guards|correctional|members|parties)){1,3}(?:[\p{Zs}\t]+(?:\d{1,3}(?:[\p{Zs}\t]*(?:[-–]|(?i:through|thru|to))[\p{Zs}\t]*\d{1,3})?|[IVXLCl\d]{1,6}[\p{Zs}\t]*(?:[-–]|(?i:through|thru|to))[\p{Zs}\t]*[IVXLC\d]{1,6}))?|[\p{Zs}\t]+(?:\d{1,3}(?:[\p{Zs}\t]*(?:[-–]|(?i:through|thru|to))[\p{Zs}\t]*\d{1,3})?|[IVXLCl\d]{1,6}[\p{Zs}\t]*(?:[-–]|(?i:through|thru|to))[\p{Zs}\t]*[IVXLC\d]{1,6}))[\s\p{P}]*$',
+    '^[\s\p{P}]*(?:[IVXLC]{1,6}|\d{1,3})[\p{Zs}\t]*(?:[-–]|(?i:through|thru))[\p{Zs}\t]*(?:[IVXLC]{1,6}|\d{1,3})[\s\p{P}]*$',
+]
+
+# A tax year is a period, no tax number: "2014/15", "2029-30" (guide rule
+# 4, issue #480).
+[[shape]]
+category = "TAX"
+forbid = ['^\s*(?:19|20)\d{2}\s*[/–-]\s*(?:\d{2}|(?:19|20)\d{2})\s*$']
+
+# An English name of an organization is in title case or carries a legal
+# form; words in sentence case are a document kind, a heading or a team
+# ("Distribution register", "Lasting power of attorney", "Accounts team").
+[[shape]]
+category = "ORG"
+forbid = ['^\s*[A-Z][a-z]+(?:\s+[a-z]+)+\s*$']
+
+# Dates with an English month name: "12 March 2026" (a Russian "г." after
+# the year still counts) and "March 12, 2026".
+[[shape]]
+category = "DATE"
+guess = [
+    '(?i)\s*[«"]?(?:\d{1,2}|(?:\\?_)+)[»"]?\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+(?:\d{4}|(?:\\?_)+)(?:\s*(?:г\.?|года))?\s*',
+    '(?i)\s*(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}\s*',
+]
+
+# Claim and case numbers after their label (ADR 0092): "Claim No.
+# 6001842/2026", "**Case number:** 2026/314", "Case No. 1:26-cv-01234-JAB",
+# "Claim No CL-2026-000123". The value is the whole identifier. Statute,
+# article and clause numbers have no such label and stay unmarked. A value
+# needs four digits: the review proposes a wording everywhere it appears,
+# and "Claim No. 12" would mark "article 12" too. A date is not one.
+[[context]]
+category = "CASE"
+labels = [
+    "claim no", "claim number", "case no", "case number", "proceedings no",
+    "proceedings number", "proceedings are numbered",
+]
+between = '[\p{Zs}\t:*_№#.]{1,8}'
+value = '(?:\p{Alphabetic}+[-/:.]?)*\d[\p{Alphabetic}\p{N}]*(?:[-/:.][\p{Alphabetic}\p{N}]+)*'
+min_digits = 4
+unless_guessed = ["DATE"]
+
+# "case" alone is also a common word ("in case 30 days pass", "in case
+# 2026-03-12 is a holiday"): after it only a number with a separator, or of
+# five digits or more, is a case number ("case 202-555-0169"), never after
+# "in", "just" and the like, and never a date.
+[[context]]
+category = "CASE"
+labels = ["case"]
+between = '[\p{Zs}\t:№#]{1,4}'
+value = '(?:\p{Alphabetic}+[-/:.]?)*\d[\p{Alphabetic}\p{N}]*(?:[-/:.][\p{Alphabetic}\p{N}]+)+|\d{5,}'
+min_digits = 4
+unless_after = ["in", "just", "any", "each", "every", "worst", "best", "upper", "lower", "test", "use"]
+unless_guessed = ["DATE"]
+
+# A bank account after its label, whatever the model guessed: "**Bank
+# account:** 47-29-16/00318572" (sort code and account number, a slash or a
+# space between), an IBAN, or a run of 8–20 digits. The label decides, so a
+# slash is fine here though the BANK shape refuses it in an unlabelled span.
+[[context]]
+category = "BANK"
+labels = [
+    "bank account", "account number", "account no", "sort code", "iban", "acct",
+    "a/c",
+]
+between = '[\p{Zs}\t:*_№#.]{1,8}'
+value = '\d{2}-\d{2}-\d{2}(?:[/\p{Zs}]\d{6,10})?|[A-Z]{2}\d{2}[A-Z0-9]{11,30}|\d{8,20}'
+min_digits = 6
+
+# A staff or member ID after its label, even one of letters only
+# ("**Staff ID:** VELK-QUEN", "Employee ID: TERN-WISP"): capitals or digits
+# in hyphenated parts, or letters then digits. Never a person.
+[[context]]
+category = "IDENTITY"
+labels = [
+    "staff id", "staff number", "employee id", "employee number", "member id",
+    "membership number", "badge number",
+]
+between = '[\p{Zs}\t:*_№#.]{1,8}'
+value = '[A-Z0-9]{2,}(?:-[A-Z0-9]{2,})+|[A-Z]{1,4}\d{3,}'
+
+# A number assigned to one person is IDENTITY, the value only (guide rule
+# 6, the maintainer's decision on #484, item 3; #483): an attorney's bar
+# number and a police officer's shield number after their label ("Ohio
+# State Bar No. 0099911", "Pa. Bar # 99911", "Bar No.: 12345", "Bar Roll
+# No. 4471", "Shield No. 9912"). The whole labels are listed for a table
+# column headed by one ("| Bar No |").
+[[context]]
+category = "IDENTITY"
+labels = [
+    "bar", "shield", "bar no", "bar number", "state bar no", "state bar number",
+    "shield no", "shield number",
+]
+between = '[\p{Zs}\t]*(?:[Nn]o\.?|NO\.?|[Nn]umber|NUMBER|#|ID|[Rr]oll[\p{Zs}\t]+[Nn]o\.?|ROLL[\p{Zs}\t]+NO\.?)[\p{Zs}\t:*_#.]{0,6}'
+value = '[A-Z]{0,3}\d{3,10}(?:-\d{1,4})?'
+min_digits = 3
+
+# The same numbers by their own abbreviations: "SBN 299911" (California),
+# "ARDC No. 6299911" (Illinois).
+[[context]]
+category = "IDENTITY"
+labels = ["sbn", "ardc", "ardc no"]
+between = '[\p{Zs}\t:*_#.]{1,6}(?:[Nn]o\.?[\p{Zs}\t:]*)?'
+value = '\d{3,10}'
+min_digits = 3
+
+# A bar code in brackets after an attorney's "Esq.": "ROWAN PELL, ESQ.
+# (RP9911)" (#483).
+[[context]]
+category = "IDENTITY"
+labels = ["esq"]
+between = '\.?,?[\p{Zs}\t]*\('
+value = '[A-Z]{2,3}-?\d{3,7}'
+min_digits = 3
+
+# Addresses (ADR 0092, issues #361, #498): from the first element, a
+# building name included, to the postcode or town: "Flat 3, 41 Larch Road,
+# Bristol BS6 9ZY", "123 Main Street, Apt 4, Boston, MA 02110", "27 Wisp
+# Lane<br>Norwich NR2 8ZZ". Two elements at least, so a number before "High
+# Court" alone is not an address. The first alternative that matches wins,
+# so a flat comes before a town, and a whole postcode before a town ("M1
+# 1AA" is no town "M1"); two places (a village and its county) come only
+# before a postcode. A town may start with "St." or "Ft." ("St. Albans"),
+# run to three words ("Salt Lake City", "Bury St Edmunds"), have "upon" in
+# it ("Newcastle upon Tyne") and end in "AFB" (an air force base). Within a
+# part only spaces and tabs separate words: a town ends at the end of its
+# line ("Bristol", not "Bristol\nJohn").
+#
+# From PDF and text layers (#498): the "City, ST ZIP" or "Town POSTCODE"
+# line may sit under the street with no comma ("1800 S RIO VERDE
+# AVENUE\nBRANWICK, CO  81999", "Harrow House, 12 Pellin Street\nSlocombe
+# SL9 9ZZ"); after a line break, or in capitals, a town needs its
+# postcode. A flat, suite, floor, building or room may come before the
+# street or, up to three, after it, on its line or the next ("1023 15th
+# Street, N.W., 10th Floor", "12 Oak Road\nSuite 210\nLeeds LS1 4AB");
+# a building name ("Harrow House", "Ardley Building") before it, on its own
+# line or not. Not "Chambers", "Hall" or "Lodge", which are surnames too,
+# nor "Center", the end of many an organization's name: the model's name
+# across the address's edge would cost the whole address. A street name
+# may have a compass part or an initial with its period ("4410 W. Quarry
+# Parkway", "1625 L. Street, NW", "2121 Quillon Ave. N.W."), an ordinal
+# ("15th Street") and be in capitals. Without a house number a street
+# needs a building name before it ("Brindle House, Brindle Road") or its
+# postcode after it ("Strand, Slocombe, WC2A 9ZZ", "One Pellin Place,
+# Brindlecombe, GA 30999"). A US state may be spelled out or dotted before
+# its ZIP, which may wrap to the next line ("Brindlecombe, Georgia 30999",
+# "Wexford D.C. 20999"). A country after the postcode is no part of it
+# ("Slocombe SL9 7ZZ, UK"). P.O. boxes and a town with its postcode alone
+# wait for #506.
+#
+# The model reads a building's name before a house number as a company
+# ("Harrow House" of "Harrow House, 12 Pellin Street\nSlocombe SL9
+# 9ZZ"): a company span that is just the match's building name, with a
+# comma or a line break and a house number (a flat or suite between) after
+# it, within the match, is the address's own (`absorbs`): the match stands
+# over it, and the review takes the address, or the company where it turns
+# the address down. A company named so but with no
+# street after it ("Harrow House Ltd agreed", "Harrow House agreed") or
+# not ending in a building word ("Tower Records") stays a company.
+[[span]]
+category = "ADDRESS"
+pattern = '(?:(?:(?:{flat}|{building})(?:{sep}|{nl})){1,3}{street}(?:(?:{sep}|{nl}){flat}){0,3}|{street}(?:(?:{sep}|{nl}){flat}){1,3}|(?:{flat}(?:{sep}|{nl})){0,2}{building}(?:{sep}|{nl}){named}(?:(?:{sep}|{nl}){flat}){0,3})(?:(?:{sep}|\s+){postcode}|(?:{sep}|{nl})(?:{town}|{caps_town})(?:{sep}(?:{town}|{caps_town}))?(?:{sep}|\s+){postcode}|{sep}{town})?|{street}(?:(?:{sep}|\s+){postcode}|(?:{sep}|{nl})(?:{town}|{caps_town})(?:{sep}(?:{town}|{caps_town}))?(?:{sep}|\s+){postcode}|{sep}{town})|{named}(?:(?:{sep}|\s+){postcode}|(?:{sep}|{nl})(?:{town}|{caps_town})(?:{sep}(?:{town}|{caps_town}))?(?:{sep}|\s+){postcode})'
+parts.flat = '\b(?:(?:Flat|Unit|Apartment|Suite|Room|Floor|Building|FLAT|UNIT|APARTMENT|SUITE|ROOM|FLOOR|BUILDING|Apt\.?|APT\.?|Ste\.?|STE\.?|Rm\.?|RM\.?|Fl\.|FL\.|Bldg\.?|BLDG\.?|Mail[\p{Zs}\t]?Stop|MAIL[\p{Zs}\t]?STOP)(?:[\p{Zs}\t]*#[\p{Zs}\t]*|[\p{Zs}\t]+)(?:\d+[A-Za-z]?(?:[-.][\dA-Za-z]+)?|[A-Z])\b|\d+(?:st|nd|rd|th)[\p{Zs}\t]+(?:Floor|FLOOR)\b|(?:Ground|First|Second|Third|Lower|Upper|GROUND|FIRST|SECOND|THIRD|LOWER|UPPER)[\p{Zs}\t]+(?:Floor|FLOOR)\b)'
+parts.building = '\b(?:\p{Uppercase}[\p{Alphabetic}\x27’-]*[\p{Zs}\t]+){1,3}(?:House|Building|Buildings|Tower|Towers|Mansions|HOUSE|BUILDING|BUILDINGS|TOWER|TOWERS|MANSIONS)\b'
+parts.street = '\b\d+[A-Za-z]?(?:[-–]\d+[A-Za-z]?)?[\p{Zs}\t]+(?:(?:\p{Uppercase}[\p{Alphabetic}\x27’-]*\.?|\d+(?:st|nd|rd|th))[\p{Zs}\t]+){1,4}(?:(?:Road|Street|Lane|Avenue|Mews|Close|Court|Drive|Way|Place|Square|Crescent|Gardens|Terrace|Yard|Row|Hill|Grove|Walk|Parade|Boulevard|Parkway|Highway|Freeway|Expressway|Plaza|Circle|Trail|Quay|Wharf|Vale|Pike|Turnpike|Embankment|ROAD|STREET|LANE|AVENUE|MEWS|CLOSE|COURT|DRIVE|WAY|PLACE|SQUARE|CRESCENT|GARDENS|TERRACE|YARD|ROW|HILL|GROVE|WALK|PARADE|BOULEVARD|PARKWAY|HIGHWAY|FREEWAY|EXPRESSWAY|PLAZA|CIRCLE|TRAIL|QUAY|WHARF|VALE|PIKE|TURNPIKE|EMBANKMENT)\b|\b(?:Rd|St|Ave|Blvd|Ln|Dr|Pkwy|Hwy|Fwy|Expy|Pl|Ct|Cir|Sq|Ter|Trl|RD|ST|AVE|BLVD|LN|DR|PKWY|HWY|FWY|EXPY|PL|CT|CIR|SQ|TER|TRL)\b\.?)(?:,?[\p{Zs}\t]+(?:[NS]\.[EW]\.|[NSEW]\.|(?:[NS][EW]|[NSEW]|North|South|East|West)\b))?'
+parts.named = '\b(?:\p{Uppercase}[\p{Alphabetic}\x27’-]*[\p{Zs}\t]+){1,2}(?:Road|Street|Lane|Avenue|Drive|Boulevard|Parkway|Highway|Place|Square|Crescent|Terrace|Gardens|Mews|ROAD|STREET|LANE|AVENUE|DRIVE|BOULEVARD|PARKWAY|HIGHWAY|PLACE|SQUARE|CRESCENT|TERRACE|GARDENS|MEWS)\b|\b(?:The[\p{Zs}\t]+)?(?:Strand|Aldwych|Broadway|Kingsway|Piccadilly|Haymarket)\b'
+parts.sep = ',\s*|\s*<br\s*/?>\s*'
+parts.nl = '[\p{Zs}\t]*\\?\r?\n[\p{Zs}\t]*'
+parts.town = '(?:(?:St|Ft|Mt)\.?[\p{Zs}\t]+)?\p{Uppercase}[\p{Ll}\d][\p{Alphabetic}\d\x27’-]*(?:[\p{Zs}\t]+(?:upon[\p{Zs}\t]+)?\p{Uppercase}\p{Ll}[\p{Alphabetic}\x27’-]*){0,2}(?:[\p{Zs}\t]+AFB)?'
+parts.caps_town = '\b\p{Uppercase}{2,}(?:[\p{Zs}\t]+\p{Uppercase}{2,}){0,2}\b'
+parts.postcode = '\b(?:[A-Z]{1,2}\d[A-Z\d]?[\p{Zs}\t]?\d[A-Z]{2}|(?:[A-Z]{2}|[A-Z]\.[A-Z]\.|(?i:alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new[\p{Zs}\t]+hampshire|new[\p{Zs}\t]+jersey|new[\p{Zs}\t]+mexico|new[\p{Zs}\t]+york|north[\p{Zs}\t]+carolina|north[\p{Zs}\t]+dakota|ohio|oklahoma|oregon|pennsylvania|rhode[\p{Zs}\t]+island|south[\p{Zs}\t]+carolina|south[\p{Zs}\t]+dakota|tennessee|texas|utah|vermont|virginia|washington|west[\p{Zs}\t]+virginia|wisconsin|wyoming|district[\p{Zs}\t]+of[\p{Zs}\t]+columbia))(?:[\p{Zs}\t]+|[\p{Zs}\t]*\r?\n[\p{Zs}\t]*)\d{5}(?:-\d{4})?)\b'
+absorbs.ORG = '(?P<span>{building})(?:{sep}|{nl})(?:{flat}(?:{sep}|{nl})){0,3}\d'
+
+# A country or the word "address" at the edge of a model's address is no
+# part of it: "… OX2 0EL\nUK" ends at the postcode, "… Street address" at
+# the street (guide rule 3, #498). A country of several words goes word by
+# word ("United Kingdom", "United States of America"); "United" at an
+# address's start is a building's name ("United House"), which the span
+# pattern keeps whole.
+[[span]]
+category = "ADDRESS"
+trim = [
+    "uk", "u.k", "usa", "u.s.a", "england", "scotland", "united", "kingdom",
+    "states", "of", "america", "address",
+]
+
+# A building, floor, room or mail-stop part of an address alone is no
+# company: "Bldg 499", "10th Floor", "Suite 210, 3rd Floor", "Mail Stop
+# K9-24" (#498). A company named with one of the words stays ("Harrow Floor
+# Services", "Brindle Building Society").
+[[shape]]
+category = "ORG"
+forbid = ['(?i)^\s*(?:(?:suite|ste\.?|floor|fl\.|building|bldg\.?|room|rm\.?|mail\s*stop|unit|apt\.?|apartment|flat)\s*#?\s*(?:[a-z]?\d[\w.-]*|[a-z])\b|\d+(?:st|nd|rd|th)\s+floor|(?:ground|first|second|third|lower|upper)\s+floor)(?:\s*,\s*(?:(?:suite|ste\.?|floor|fl\.|building|bldg\.?|room|rm\.?|mail\s*stop|unit|apt\.?|apartment|flat)\s*#?\s*(?:[a-z]?\d[\w.-]*|[a-z])\b|\d+(?:st|nd|rd|th)\s+floor|(?:ground|first|second|third|lower|upper)\s+floor))*\s*$']
+
+# Nor is such a part, anywhere in the span, a bank account or an identity
+# document: "Room 2.104", "Building 179A", "Mail Stop K9-24".
+[[never]]
+match = "plural"
+words = [
+    "suite", "ste", "floor", "bldg", "building", "room", "rm", "mailstop",
+    "mail", "stop", "apt", "apartment", "flat",
+]
+anywhere_in = ["BANK", "IDENTITY"]
+
+# A unit also ends a department's name (#506).
+[[never]]
+match = "plural"
+words = ["unit"]
+anywhere_in = ["BANK", "IDENTITY"]
+last_word_of = ["ORG"]
+
+# Dates of birth (ADR 0092): a date after born, DOB or date of birth is a
+# personal date ("born 14 March 1988", "**DOB:** 23 September 1991"). Every
+# other date stays: signing, deadlines, hearings. The value must be one the
+# DATE guesses take. The label may be in the cell before or on the line
+# before ("| DOB | 14/03/1988 |", "DOB:" then the date on its own line).
+[[context]]
+category = "DATE"
+labels = ["born", "dob", "d.o.b", "date of birth", "birth date"]
+between = '[\p{Zs}\t:*_.,|]{0,10}(?:\r?\n[\p{Zs}\t|]*)?(?:on[\p{Zs}\t]+)?'
+value = '\d{1,2}[./]\d{1,2}[./]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}\p{Zs}+\p{Alphabetic}+\p{Zs}+\d{4}|\p{Alphabetic}+\p{Zs}+\d{1,2},?\p{Zs}+\d{4}'
+only_guessed = ["DATE"]
+
+# English-speaking courts, public bodies, laws and legal databases are never
+# web addresses to replace (ADR 0094, guide rule 8): "www.gov.uk/…",
+# "https://www.legislation.gov.uk/ukpga/2018/12" (every "*.gov.uk"; US
+# courts are "*.gov"). Justia and FindLaw also host lawyers' profiles, so
+# only their case-law hosts are listed.
+[[url]]
+public = [
+    "gov.uk", "judiciary.uk", "bailii.org", "supremecourt.uk",
+    "parliament.uk", "nhs.uk", "police.uk", "gov.au", "gc.ca", "govt.nz",
+    "gov.ie", "courts.ie", "law.justia.com", "caselaw.findlaw.com",
+    "westlaw.com", "lexisnexis.com", "casetext.com",
+]
+
+# Legal references are never marked (guide rule 8, issues #480 and #499).
+# Reporter citations: "424 U.S. at 38", "904 F.2d 275, 277", "33 A.D.3d
+# 352", "912 F.3d 455, 460 and 77 N.E.2d 310", with a footnote ("n. 4").
+# One-letter reporters (A., P., So.) and F. need their series ("A.2d"), so
+# a flat's "12 A." is none.
+[[reference]]
+pattern = '\b\d{1,4}[\p{Zs}\t]+{reporter}{pages}(?:[\p{Zs}\t]*(?:,|;|and|&)[\p{Zs}\t]*\d{1,4}[\p{Zs}\t]+{reporter}{pages})*'
+parts.reporter = '(?:U\.[\p{Zs}\t]?S\.|S\.[\p{Zs}\t]?Ct\.|L\.[\p{Zs}\t]?Ed\.(?:[\p{Zs}\t]?2d)?|F\.[\p{Zs}\t]?(?:2d|3d|4th)|F\.[\p{Zs}\t]?Supp\.(?:[\p{Zs}\t]?(?:2d|3d))?|F\.[\p{Zs}\t]?App[\x27’]x|B\.[\p{Zs}\t]?R\.|(?:N\.[\p{Zs}\t]?[EW]|S\.[\p{Zs}\t]?[EW])\.(?:[\p{Zs}\t]?(?:2d|3d))?|(?:A|P|So)\.[\p{Zs}\t]?(?:2d|3d|4th)|A\.[\p{Zs}\t]?D\.(?:[\p{Zs}\t]?(?:2d|3d))?|N\.[\p{Zs}\t]?Y\.(?:[\p{Zs}\t]?S\.)?[\p{Zs}\t]?(?:2d|3d)|Cal\.[\p{Zs}\t]?Rptr\.(?:[\p{Zs}\t]?(?:2d|3d))?|Cong\.[\p{Zs}\t]?Rec\.|Fed\.[\p{Zs}\t]?Reg\.|Fed\.[\p{Zs}\t]?Cl\.|Stat\.|T\.[\p{Zs}\t]?C\.)'
+parts.pages = '[\p{Zs}\t]*(?:at[\p{Zs}\t]+)?[HS]?\d{1,6}(?:[-–]\d{1,6})?(?:,[\p{Zs}\t]*\d{1,6}(?:[-–]\d{1,6})?)*(?:[\p{Zs}\t]*nn?\.[\p{Zs}\t]*\d{1,4})?'
+
+# Westlaw and Lexis citations: "2015 WL 4554844", "2019 U.S. Dist. LEXIS
+# 12345", with a star page.
+[[reference]]
+pattern = '\b(?:19|20)\d{2}[\p{Zs}\t]+(?:WL|U\.S\.[\p{Zs}\t]+(?:Dist\.|App\.)[\p{Zs}\t]+LEXIS|LEXIS)[\p{Zs}\t]+\d{1,9}(?:,[\p{Zs}\t]*at[\p{Zs}\t]*\*\d{1,5})?'
+
+# English and Welsh reports and neutral citations: "[2020] STC 960",
+# "[2019] EWCA Civ 1234", "(2004) 1 WLR 12", and the distinctive reports
+# without their year ("ICR 801").
+[[reference]]
+pattern = '(?:[\[(](?:19|20)\d{2}[\])][\p{Zs}\t]+(?:\d{1,2}[\p{Zs}\t]+)?(?:UKSC|UKHL|UKPC|UKUT|UKFTT|UKEAT|EWCA[\p{Zs}\t]+(?:Civ|Crim)|EWHC|EWCOP|EWFC|AC|QB|KB|Ch|Fam|WLR|All[\p{Zs}\t]+ER|ICR|IRLR|STC|BCLC|BCC|FSR|RPC|EGLR|HLR|SFTD|BTC|TC|Lloyd[\x27’]s[\p{Zs}\t]+Rep|Cr[\p{Zs}\t]+App[\p{Zs}\t]+R)|\b(?:\d{1,2}[\p{Zs}\t]+)?(?:ICR|IRLR|STC|WLR|BCLC|EWCA[\p{Zs}\t]+Civ|EWHC))[\p{Zs}\t]+\d{1,5}(?:[\p{Zs}\t]*\((?:Ch|Comm|QB|KB|Fam|Admin|TCC|IPEC|Pat|TC)\))?'
+
+# US codes and regulations: "26 U.S.C. § 6212", "31 U.S.C. 3903", "48 CFR
+# 52.212-1", "735 ILCS 5/2-619", "I.R.C. § 61", and the dotted
+# abbreviations alone ("U.S.C.", whose "S.C." is no one's initials). The
+# undotted ones need their numbers: "USC" alone may be a university.
+[[reference]]
+pattern = '(?:\b\d{1,3}[\p{Zs}\t]+)?\b(?:U\.[\p{Zs}\t]?S\.[\p{Zs}\t]?C\.(?:[\p{Zs}\t]?A\.)?|I\.[\p{Zs}\t]?R\.[\p{Zs}\t]?C\.|C\.[\p{Zs}\t]?F\.[\p{Zs}\t]?R\.|U\.[\p{Zs}\t]?C\.[\p{Zs}\t]?C\.)(?:[\p{Zs}\t]*(?:§§?[\p{Zs}\t]*)?{section})?|\b\d{1,3}[\p{Zs}\t]+(?:CFR|ILCS|USC)[\p{Zs}\t]*(?:§§?[\p{Zs}\t]*)?{section}'
+parts.section = '\d[\dA-Za-z]*(?:[.\-/–][\dA-Za-z]+)*(?:\([\dA-Za-z]{1,4}\))*'
+
+# Sections, paragraphs and clauses: "§ 6212", "§§ 1-3", "¶ 4", "section
+# 12", "Article 6", "clause 4.2", "Rule 56(a)", "Fed. R. Civ. P. 12(b)(6)",
+# "CPR 31.16" (guide rule 5: statute, article, section and clause numbers
+# stay unmarked).
+[[reference]]
+pattern = '(?:§§?|¶¶?|\b(?:[Ss]ections?|[Aa]rticles?|[Cc]lauses?|[Rr]ules?|[Pp]aragraphs?|[Ss]chedules?|[Rr]egulations?|[Aa]rt\.|[Pp]aras?\.|[Ss]s?\.|Fed\.[\p{Zs}\t]?R\.[\p{Zs}\t]?(?:Civ|Crim|App|Evid|Bankr)\.[\p{Zs}\t]?P\.|FRCP|CPR))[\p{Zs}\t]*{section}(?:[\p{Zs}\t]*[-–][\p{Zs}\t]*{section})?'
+parts.section = '\d[\dA-Za-z]*(?:[.\-/][\dA-Za-z]+)*(?:\([\dA-Za-z]{1,4}\))*'
+
+# Regulations, orders, laws and releases by number: "FAR 52.212-1", "E.O.
+# 13526", "Executive Order No. 14028", "Pub. L. No. 115-97", "Release No.
+# 34-98765".
+[[reference]]
+pattern = '\b(?:(?:FAR|DFARS)[\p{Zs}\t]+(?:§[\p{Zs}\t]*)?\d+(?:\.\d+)+(?:-\d+)*|(?:E\.[\p{Zs}\t]?O\.|Exec\.[\p{Zs}\t]+Order|Executive[\p{Zs}\t]+Order)[\p{Zs}\t]+(?:No\.[\p{Zs}\t]*)?\d{3,6}|Pub\.[\p{Zs}\t]?L\.[\p{Zs}\t]+(?:No\.[\p{Zs}\t]*)?\d{2,3}-\d{1,4}|(?:Release|Rel\.)[\p{Zs}\t]+No\.[\p{Zs}\t]*(?:[A-Z]{1,3}-)?\d+(?:-\d+)*)'
+
+# The record: transcript pages ("Tr. 435-36", "Tr. at 12:4-9"), docket
+# entries ("ECF Doc. #12-3", "ECF No. 45", "Dkt. 7"), footnotes ("n. 14",
+# "nn. 3-4") and supplemental appendix pages ("123sa", "45sa-47sa").
+[[reference]]
+pattern = '\bTr\.[\p{Zs}\t]*(?:at[\p{Zs}\t]+)?\d+(?:[:–-]\d+)*(?:,[\p{Zs}\t]*\d+(?:[:–-]\d+)*)*|\b(?:ECF|Dkt\.?)[\p{Zs}\t]+(?:(?:Doc|No|Nos)\.[\p{Zs}\t]*)?#?[\p{Zs}\t]*\d+(?:-\d+)?|\bDoc\.[\p{Zs}\t]*#[\p{Zs}\t]*\d+(?:-\d+)?|\bnn?\.[\p{Zs}\t]*\d{1,4}(?:[-–]\d{1,4})?\b|\b\d{1,5}sa(?:[-–]\d{1,5}sa)?\b'
+
+# Short-form citations and the record's pages: "Id. at 38", "supra, at
+# 12", "J.A. 123", "ROA.456", "App. 12".
+[[reference]]
+pattern = '\b(?:[Ii]d\.,?|supra,?)[\p{Zs}\t]+at[\p{Zs}\t]+\d{1,6}(?:[-–]\d{1,6})?(?:,[\p{Zs}\t]*\d{1,6}(?:[-–]\d{1,6})?)*(?:[\p{Zs}\t]*nn?\.[\p{Zs}\t]*\d{1,4})?|\b(?:J\.[\p{Zs}\t]?A\.|ROA\.|App\.)[\p{Zs}\t]*\d{1,6}(?:[-–]\d{1,6})?'
+
+# A cited case is a legal reference, its parties' names included, both
+# sides (guide rule 8, #506 item 2, issue #561): "Pellam v. Ostrand, 912
+# F.3d 455 (9th Cir. 2031)", "Galvan v. Calhoun Cty., 2031 WL 1234567",
+# "News Group Newspapers Ltd v Brindle [2031] EWHC 12 (Ch)", "In re Estate
+# of Bramblett, 77 B.R. 310", "Ex parte Quill, 12 So. 3d 4", and a docket
+# number with its court and year or its reporter after it ("Grant v.
+# Finecy, No. 02-23-00310-CV (Tex. App. 2031)", #506 item 3). The citation
+# must follow the name: a caption ("Ivo Harrow v. Quillon Ltd", its own
+# "Case No." after it or not) is the case at hand's and stays.
+#
+# The `party` groups are the parties. A name in a match stays only where it
+# names a party of the case at hand: one the model found outside every cited
+# case, or one after a role listed here ("Plaintiff Ivo Harrow"), holds its
+# words or is held by them ("Harrow" of "Ivo Harrow"). Names outside
+# citations stay. The caption and running text decide which parties are
+# the case at hand's.
+# A party is capitalised words (with periods, initials, numbers and "&"),
+# "of", "the", "ex rel." and the like between them, a legal form after a
+# comma ("Murrin Bros. 1885, Ltd") and "et al.", in emphasis or not
+# ("*Pellam v. Ostrand*, 912 F.3d 455"). A word's period is an initial's or
+# a listed abbreviation's ("Bros.", "Cty."), and a legal form's period
+# ("Ltd.") ends the party. Code also clips the leading party after a
+# period before a capitalised word: even "Jr." can end a sentence.
+# A sentence's first word ("See Pellam") becomes part of it. "and"
+# joins no party: in "Ivo Harrow and Pellam v. Ostrand" Ivo Harrow is no
+# party. A docket number's court and year follow it at once, "(Tex. App.
+# 2031)", so a sentence on after it ("No. 22-1234, counsel was Ivo Harrow
+# (admitted 2020)") is none of it.
+[[reference]]
+pattern = '(?:\b(?:[Ii]n[\p{Zs}\t]+re|[Ee]x[\p{Zs}\t]+parte|(?:[Ii]n[\p{Zs}\t]+the[\p{Zs}\t]+)?[Mm]atter[\p{Zs}\t]+of)[\p{Zs}\t]+(?:the[\p{Zs}\t]+)?(?P<party>{party})|(?P<party2>{party}){v}(?P<party3>{party})),?{s}(?:{reporter}|{neutral}|{docket_reporter}|(?P<docket>{docket}))'
+parts.party = '(?:(?:Bros|Cty|Cnty|Dist|Dep[\x27’]t|Ass[\x27’]n|Mfg|Nat[\x27’]l|Int[\x27’]l|Sch|Univ|Hosp|Mut|Ins|Bd|Comm[\x27’]n|Sav|Fed|Sys|Servs?|Indus|Assocs?|Grp|Ctr|Twp|Auth|Elec|Tel|Mgmt|Prods?|St|Ft|Mt|Jr|Sr|Admin|Gen|Fin|Transp|Educ|Med|Hldgs|Invs?|Tech)\.|\p{Uppercase}\.(?:[\p{Zs}\t]?\p{Uppercase}\.)*|\p{Uppercase}[\p{Alphabetic}\x27’\-]*)(?:(?:[\p{Zs}\t]+(?:of|the|de|der|du|la|le|van|von|ex[\p{Zs}\t]+rel\.))*[\p{Zs}\t]+(?:(?:(?:Bros|Cty|Cnty|Dist|Dep[\x27’]t|Ass[\x27’]n|Mfg|Nat[\x27’]l|Int[\x27’]l|Sch|Univ|Hosp|Mut|Ins|Bd|Comm[\x27’]n|Sav|Fed|Sys|Servs?|Indus|Assocs?|Grp|Ctr|Twp|Auth|Elec|Tel|Mgmt|Prods?|St|Ft|Mt|Jr|Sr|Admin|Gen|Fin|Transp|Educ|Med|Hldgs|Invs?|Tech)\.|\p{Uppercase}\.(?:[\p{Zs}\t]?\p{Uppercase}\.)*|\p{Uppercase}[\p{Alphabetic}\x27’\-]*)|&|\d{1,4})){0,8}(?:[\p{Zs}\t]+(?:Co|Corp|Inc|Ltd|Cos|Plc|LLC)\.)?(?:,[\p{Zs}\t]*(?:Inc|Ltd|LLC|L\.L\.C|LLP|L\.L\.P|L\.P|Co|Corp|N\.A|P\.C|PLC|plc|S\.A|AG|GmbH)\.?)?(?:,?[\p{Zs}\t]+et[\p{Zs}\t]+al\.)?[*_]{0,3}'
+parts.v = '(?:[\p{Zs}\t]+|[\p{Zs}\t]*\r?\n[\p{Zs}\t]*)(?:v|vs)\.?(?:[\p{Zs}\t]+|[\p{Zs}\t]*\r?\n[\p{Zs}\t]*)'
+parts.s = '(?:[\p{Zs}\t]+|[\p{Zs}\t]*\r?\n[\p{Zs}\t]*)'
+parts.reporter = '\d{1,4}[\p{Zs}\t]+(?:(?:\p{Uppercase}\p{Alphabetic}{0,7}\.|[A-Z]{1,5}|\d(?:d|th)|App[\x27’]x)[\p{Zs}\t]?){1,5}[\p{Zs}\t]*\d{1,9}'
+parts.neutral = '[\[(](?:19|20)\d{2}[\])][\p{Zs}\t]+(?:\d{1,3}[\p{Zs}\t]+)?(?:\p{Uppercase}\p{Alphabetic}*\.?[\p{Zs}\t]+){1,4}\d{1,6}'
+parts.docket = '(?:(?:Case|Civ\.|Civil|Crim\.|Cr\.)[\p{Zs}\t]+(?:Action[\p{Zs}\t]+)?)?Nos?\.[\p{Zs}\t]*[\dA-Z][\w:.\-–]*\d[\w\-–]*(?:,[\p{Zs}\t]*slip[\p{Zs}\t]+op\.(?:[\p{Zs}\t]+at[\p{Zs}\t]+\d+)?)?[\p{Zs}\t]*\([\p{Uppercase}\d][^()\n]{0,60}?(?:19|20)\d{2}\)'
+parts.docket_reporter = '(?:(?:Case|Civ\.|Civil|Crim\.|Cr\.)[\p{Zs}\t]+(?:Action[\p{Zs}\t]+)?)?Nos?\.[\p{Zs}\t]*[\dA-Z][\w:.\-–]*\d[\w\-–]*,[\p{Zs}\t]*(?:19|20)\d{2}[\p{Zs}\t]+(?:WL|LEXIS|U\.S\.[\p{Zs}\t]+Dist\.[\p{Zs}\t]+LEXIS)[\p{Zs}\t]+\d+'
+roles = [
+    "plaintiff", "defendant", "claimant", "respondent", "appellant", "appellee",
+    "petitioner", "applicant", "debtor", "creditor", "movant", "intervenor",
+    "relator", "complainant",
+]
+# A decision identified as the subject of this appeal/action is the case
+# at hand's: keep its parties when one of these phrases occurs in the 60
+# characters before the citation, ignoring case. Uncertain names stay.
+own_before = [
+    "under appeal", "appealed from", "appeal from", "the decision below",
+    "the judgment below", "the order below", "on appeal from", "the court below",
+    "this appeal", "the present case", "the instant case", "this case", "this action",
+]
+
+# A short citation with a reporter (#561): "Pellam, 912 F.3d at 460"
+# or "Pellam, 2031 WL 1234567, at *3". A bare surname or "supra" alone
+# does not establish that a name belongs only to a precedent.
+[[reference]]
+pattern = '(?P<party>{party}),{s}\d{1,4}[\p{Zs}\t]+(?:(?:\p{Uppercase}\p{Alphabetic}{0,7}\.|[A-Z]{1,5}|\d(?:d|th)|App[\x27’]x)[\p{Zs}\t]?){1,5}(?:[\p{Zs}\t]*\d{1,9},?)?[\p{Zs}\t]+at[\p{Zs}\t]+\*?\d'
+parts.party = '(?:(?:Bros|Cty|Cnty|Dist|Dep[\x27’]t|Ass[\x27’]n|Mfg|Nat[\x27’]l|Int[\x27’]l|Sch|Univ|Hosp|Mut|Ins|Bd|Comm[\x27’]n|Sav|Fed|Sys|Servs?|Indus|Assocs?|Grp|Ctr|Twp|Auth|Elec|Tel|Mgmt|Prods?|St|Ft|Mt|Jr|Sr|Admin|Gen|Fin|Transp|Educ|Med|Hldgs|Invs?|Tech)\.|\p{Uppercase}\.(?:[\p{Zs}\t]?\p{Uppercase}\.)*|\p{Uppercase}[\p{Alphabetic}\x27’\-]*)(?:(?:[\p{Zs}\t]+(?:of|the|de|der|du|la|le|van|von))*[\p{Zs}\t]+(?:(?:(?:Bros|Cty|Cnty|Dist|Dep[\x27’]t|Ass[\x27’]n|Mfg|Nat[\x27’]l|Int[\x27’]l|Sch|Univ|Hosp|Mut|Ins|Bd|Comm[\x27’]n|Sav|Fed|Sys|Servs?|Indus|Assocs?|Grp|Ctr|Twp|Auth|Elec|Tel|Mgmt|Prods?|St|Ft|Mt|Jr|Sr|Admin|Gen|Fin|Transp|Educ|Med|Hldgs|Invs?|Tech)\.|\p{Uppercase}\.(?:[\p{Zs}\t]?\p{Uppercase}\.)*|\p{Uppercase}[\p{Alphabetic}\x27’\-]*)|&|\d{1,4})){0,8}(?:[\p{Zs}\t]+(?:Co|Corp|Inc|Ltd|Cos|Plc|LLC)\.)?(?:,[\p{Zs}\t]*(?:Inc|Ltd|LLC|LLP|Co|Corp|PLC|plc)\.?)?(?:,?[\p{Zs}\t]+et[\p{Zs}\t]+al\.)?[*_]{0,3}'
+parts.s = '(?:[\p{Zs}\t]+|[\p{Zs}\t]*\r?\n[\p{Zs}\t]*)'
+
+# "Id." and "Ibid." alone cite the authority before, and name no one: the
+# model's "Id" as a person (#561).
+[[reference]]
+pattern = '\b(?:Id|id|Ibid|ibid)\.'
+
+# A form's outline letter before its part's title in title case is no
+# initial: "J. Additional Questions" (guide rule 1, issue #499).
+[[reference]]
+pattern = '(?P<lead>(?m:^)[\p{Zs}\t#>*_|]*(?:(?:Part|Section|Item)[\p{Zs}\t]+)?)\p{Uppercase}\.(?P<tail>[\p{Zs}\t]+\p{Uppercase}\p{Ll}+(?:[\p{Zs}\t]+(?:\p{Uppercase}\p{Ll}+|of|and|or|the|to|for|in))*[\p{Zs}\t]+\p{Uppercase}\p{Ll}+[\p{Zs}\t*_:|]*(?m:$))'
+
+# A patent or trademark schedule's row is no identifier, address or name
+# (guide rule 8, issue #486): an office's code opening the row, then its
+# application, patent or registration numbers and their dates, in columns
+# ("AU  2009241803  30-Apr-09  2009241803  26-Sep-13", "DE  60 2009 024
+# 610.0  30-Apr-09  2 286 018", "| US | 12/432,845 | 30-Apr-09 |"). The
+# code is no organization ("AU", "US"). A row needs a column's gap after
+# the code, a date, and a number only a patent office gives (a US
+# application's "12/432,845", a European one's "9739191.6", a German
+# "60 2009 024 610.0", a year-led "2009241803", a US trademark's serial
+# "86920111") or a status only a trademark has, in its own column
+# ("Published", "Opposed"). So a sentence opening "US" stays, an IBAN
+# ("DE89 3704 …") stays, and so does a table of companies by country with
+# their amounts, statuses, company numbers and dates ("| UK | Acme Ltd |
+# Registered | 01234567 | 01/02/2020 |"). The row ends with its last
+# column of dates and numbers, never on the line after it, which a
+# citation's wrapping joins ("Contact: Jane Morgan").
+[[reference]]
+pattern = '(?m:^)[\p{Zs}\t|]*{office}{gap}[^\n]*?(?:{number}[^\n]*?{date}|{date}[^\n]*?{number})(?:{gap}(?:{date}|\d[\p{Zs}]\d{3}[\p{Zs}]\d{3}\b|\d+(?:[,./]\d+)*))*'
+parts.office = '(?:US|EP|WO|PCT|DE|GB|UK|FR|JP|CN|KR|AU|CA|BE|NL|LU|IT|ES|PT|CH|AT|SE|DK|FI|NO|IE|PL|CZ|HU|TR|IN|BR|MX|AR|RU|TW|HK|SG|NZ|ZA|IL|EM|EU|WIPO|EUIPO)\b'
+parts.gap = '[\p{Zs}\t]*\||[\p{Zs}\t]{2,}|\t'
+parts.number = '\b(?:\d{1,2}/\d{3},\d{3}|\d{4}/\d{6}|\d{2}[\p{Zs}]\d{4}[\p{Zs}]\d{3}[\p{Zs}]\d{3}\.\d|\d{7,9}\.\d|(?:19|20)\d{8,10}|[7-9]\d{7})\b|\b(?:Published|Allowed|Abandoned|Opposed|PUBLISHED|ALLOWED|ABANDONED|OPPOSED)(?:[\p{Zs}\t]*\||[\p{Zs}\t]{2,}|\t)'
+parts.date = '\b(?:\d{1,2}[-\p{Zs}](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?[-\p{Zs},]+\d{2,4}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|(?:19|20)\d{2}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?[\p{Zs}]\d{1,2},[\p{Zs}]\d{4})\b'
+
+# A patent's, a design's or a trademark's number after its word is no
+# identifier (guide rule 8, issue #486): "U.S. Patent No. 8,420,710",
+# "Patent US 99/123,456 (AU 2099000111)", "trademark Reg. No. 9876543",
+# "Trademark Serial No. 86920111", "European Patent EP 2 286 018", a list
+# of them too. "Registration No." alone may be a company's or a car's and
+# stays.
+[[reference]]
+pattern = '\b(?:(?:U\.[\p{Zs}\t]?S\.|US|European|EP|PCT|International)[\p{Zs}\t]+)?(?:[Pp]atents?|PATENTS?|[Tt]rade[\p{Zs}\t-]?[Mm]arks?|TRADE[\p{Zs}\t-]?MARKS?|[Dd]esigns?)(?:[\p{Zs}\t]+(?:[Aa]pplication|[Rr]egistration|[Rr]eg\.|[Ss]erial|[Pp]ublication|[Ff]iling))?(?:[\p{Zs}\t]+(?:[Nn]os?\.?|[Nn]umbers?|#))?[\p{Zs}\t]*:?[\p{Zs}\t]*{entry}(?:[\p{Zs}\t]*(?:,|;|and|&|\(|or)[\p{Zs}\t]*{entry}\)?)*'
+parts.entry = '(?:(?:US|EP|WO|PCT|DE|GB|UK|FR|JP|CN|KR|AU|CA|EM|EU)[\p{Zs}\t]?)?(?:\d{1,2}/\d{3},\d{3}|\d{1,3}(?:,\d{3}){1,2}|\d{4}/\d{6}|\d{2}[\p{Zs}]\d{4}[\p{Zs}]\d{3}[\p{Zs}]\d{3}\.\d|\d[\p{Zs}]\d{3}[\p{Zs}]\d{3}|\d{5,}(?:\.\d)?)(?:[\p{Zs}\t]?[ABCES]\d?\b)?'
+
+# A form's number is no identifier (guide rule 8, issue #486): "form
+# STD009X.UK", "Form 10-K", "OPM Form 1203-FX", "Standard Form 1449", "Form
+# W-9", "SF 1449". An industry's code too: "NAICS 541511", "NAICS:" with
+# its code on the next line, "SIC code 7372".
+[[reference]]
+pattern = '\b(?:(?:[A-Z]{2,5}|Standard|STANDARD)[\p{Zs}\t]+)?(?:[Ff]orm|FORM)[\p{Zs}\t]+(?:(?:[Nn]o\.?|#)[\p{Zs}\t]*)?[A-Z]{0,4}-?\d[\dA-Z]*(?:[.\-/][\dA-Z]+)*|\bSF[\p{Zs}\t-]?\d{2,4}[A-Z]?\b|\b(?:NAICS|SIC|PSC|NACE)(?:[\p{Zs}\t]+[Cc]odes?)?[\p{Zs}\t]*(?:[:#]|[Nn]o\.)?[\p{Zs}\t]*\d{2,6}(?:\.\d{1,2})?(?:[\p{Zs}\t]*(?:,|and|or)[\p{Zs}\t]*\d{2,6}(?:\.\d{1,2})?)*'
+
+# A toll-free prefix alone is no phone: 'a toll-free "800" access number',
+# 'toll-free “1-800”, “1-888” and “1-877”' (guide rule 6, issue #486). A
+# whole toll-free number is an organization's phone and stays a phone
+# ("toll-free 1-800-555-0199", "8-800-555-35-35").
+[[reference]]
+pattern = '\b(?:[Tt]oll[\p{Zs}\t-]*[Ff]ree|[Ff]reephone)[\p{Zs}\t]*{prefix}(?:[\p{Zs}\t]*(?:,|or|and)[\p{Zs}\t]*{prefix})*(?:[\p{Zs}\t]+(?:access[\p{Zs}\t]+)?(?:numbers?|lines?|service))?'
+parts.prefix = '[“"‘\x27]?(?:1-[\p{Zs}\t]?)?\d{3}\b[”"’\x27]?'
+
+# A link's query value that mixes lower case, upper case and digits is a
+# session or tracking token, no identifier
+# ("https://example.invalid/p?srsltid=AbCd_123xYz"; guide rules 6 and 7,
+# issue #486). A value of digits alone ("?inn=7701234567"), of one case
+# ("?passport=AB1234567") or without digits ("?name=JaneMorgan") stays,
+# as visible text would.
+[[reference]]
+pattern = '(?P<lead>\b(?:https?://|www\.)[^\s?#<>()\[\]]*\?(?:[^\s#&<>()\[\]]*&)*[A-Za-z_][A-Za-z0-9_.-]*=){token}'
+parts.token = '[A-Za-z0-9_~-]*(?:[a-z][A-Za-z0-9_~-]*[A-Z][A-Za-z0-9_~-]*\d|[a-z][A-Za-z0-9_~-]*\d[A-Za-z0-9_~-]*[A-Z]|[A-Z][A-Za-z0-9_~-]*[a-z][A-Za-z0-9_~-]*\d|[A-Z][A-Za-z0-9_~-]*\d[A-Za-z0-9_~-]*[a-z]|\d[A-Za-z0-9_~-]*[a-z][A-Za-z0-9_~-]*[A-Z]|\d[A-Za-z0-9_~-]*[A-Z][A-Za-z0-9_~-]*[a-z])[A-Za-z0-9_~-]*'

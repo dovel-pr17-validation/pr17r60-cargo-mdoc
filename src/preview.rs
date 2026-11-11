@@ -1,0 +1,643 @@
+//! Loaded preview and pending replacement have independent lifetimes.
+//! Failure preserves the displayed preview; committing releases old PDF data
+//! before deleting its temporary DOCX backing file.
+use crate::{
+    comment_panel,
+    document_view::{Background, DocumentView},
+    markdown_search,
+    style::Theme,
+    workspace,
+};
+use gpui::{App, Context, Entity, Focusable, Subscription, Window, actions, prelude::*};
+use gpui_pdf::PdfView;
+use mdoc_import::docx_preview::{self, PreviewError};
+use mdoc_store::session_store;
+use std::{
+    cell::Cell,
+    path::PathBuf,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+actions!(mdoc, [RetryPreview]);
+
+/// DOCX previews are rendered locally and only approximate Word's layout
+/// (ADR 0005); the Markdown is converted from the file itself.
+pub(crate) const DOCX_NOTE: &str = "Approximate preview: the layout may differ from Word. The Markdown is converted from the file itself.";
+
+/// Give the preview's find bar a text input, so typing goes through the
+/// text-input path and IME works.
+pub(crate) fn attach_search_field(
+    pdf: &mut PdfView,
+    cx: &mut Context<PdfView>,
+) -> Entity<markdown_search::SearchInput> {
+    let accent = pdf.focus_accent();
+    let field = cx.new(|cx| {
+        markdown_search::SearchInput::new(cx)
+            .with_focus_accent(accent)
+            .with_key_context("PreviewSearch")
+            .with_placeholder("Find…")
+            .with_label("Find in preview")
+    });
+    let focus = field.read(cx).focus_handle(cx);
+    pdf.set_search_field(field.clone(), focus, |field| field.value().to_owned(), cx);
+    field
+}
+
+struct PendingPreview {
+    pdf: Entity<PdfView>,
+    docx: Option<docx_preview::DocxPreview>,
+    _subscription: Subscription,
+}
+
+/// The preview pane's message when the source can't be read, for example
+/// because it moved; Retry can succeed once it is back.
+pub(super) const UNREADABLE_SOURCE: &str =
+    "mdoc could not read this file. Check that it is still there.";
+
+/// The preview pane's message for a format it can't show.
+pub(super) const NO_PREVIEW: &str = "No preview for this format. mdoc previews PDF and DOCX files.";
+
+#[derive(Default)]
+pub(super) struct PreviewState {
+    split_ratio: Option<f32>,
+    visible: bool,
+    queued: bool,
+    /// Committed attachment; source is the current request/retry target.
+    attachment: Option<PathBuf>,
+    restore_position: Option<(usize, f32, session_store::PreviewFit)>,
+    pdf: Option<Entity<PdfView>>,
+    docx: Option<docx_preview::DocxPreview>,
+    comment_panel: Option<Entity<comment_panel::CommentPanel>>,
+    pending: Option<PendingPreview>,
+    message: Option<String>,
+    loading: bool,
+    retryable: bool,
+    /// The last request failed. Unlike `retryable`, this includes failures
+    /// another attempt can't fix; the sidebar's warning follows it.
+    failed: bool,
+    source: Option<PathBuf>,
+    cancel: Option<Arc<AtomicBool>>,
+    generation: u64,
+    subscription: Option<Subscription>,
+}
+
+impl PreviewState {
+    pub(super) fn split_ratio(&self) -> Option<f32> {
+        self.split_ratio
+    }
+
+    pub(super) fn visible(&self) -> bool {
+        self.visible
+    }
+
+    /// A DOCX job waits for the preview worker.
+    pub(super) fn queued(&self) -> bool {
+        self.queued
+    }
+
+    /// The committed attachment; `source` is the current request.
+    pub(super) fn attachment(&self) -> Option<&PathBuf> {
+        self.attachment.as_ref()
+    }
+
+    pub(super) fn source(&self) -> Option<&PathBuf> {
+        self.source.as_ref()
+    }
+
+    pub(super) fn pdf(&self) -> Option<&Entity<PdfView>> {
+        self.pdf.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(super) fn docx(&self) -> Option<&docx_preview::DocxPreview> {
+        self.docx.as_ref()
+    }
+
+    pub(super) fn comment_panel(&self) -> Option<&Entity<comment_panel::CommentPanel>> {
+        self.comment_panel.as_ref()
+    }
+
+    /// The pane's one plain message, if any.
+    pub(super) fn message(&self) -> Option<&String> {
+        self.message.as_ref()
+    }
+
+    pub(super) fn loading(&self) -> bool {
+        self.loading
+    }
+
+    /// Another attempt can succeed, so Retry shows.
+    pub(super) fn retryable(&self) -> bool {
+        self.retryable
+    }
+
+    /// The last request failed; the sidebar's warning follows it.
+    pub(super) fn failed(&self) -> bool {
+        self.failed
+    }
+
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// A tab's preview as its session record saved it.
+    pub(super) fn restore(
+        &mut self,
+        attachment: Option<PathBuf>,
+        visible: bool,
+        split_ratio: Option<f32>,
+        position: Option<(usize, f32, session_store::PreviewFit)>,
+    ) {
+        self.source = attachment.clone();
+        self.attachment = attachment;
+        self.visible = visible;
+        self.split_ratio = split_ratio;
+        self.restore_position = position;
+    }
+
+    /// Show `path` as the tab's source before anything loads it.
+    pub(super) fn show_source(&mut self, path: PathBuf) {
+        self.source = Some(path.clone());
+        self.attachment = Some(path);
+        self.visible = true;
+    }
+
+    /// `path` has no preview: the pane says so.
+    pub(super) fn no_preview(&mut self, path: PathBuf) {
+        self.attachment = Some(path.clone());
+        self.source = Some(path);
+        self.message = Some(NO_PREVIEW.into());
+    }
+
+    /// A source without a preview was checked for `generation`; it is
+    /// `readable` or not. False when a newer request replaced it.
+    pub(super) fn checked(&mut self, generation: u64, readable: bool) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        self.loading = false;
+        self.retryable = !readable;
+        self.failed = !readable;
+        self.message = Some(
+            if readable {
+                NO_PREVIEW
+            } else {
+                UNREADABLE_SOURCE
+            }
+            .into(),
+        );
+        true
+    }
+
+    pub(super) fn show(&mut self) {
+        self.visible = true;
+    }
+
+    /// Hide the pane; returns whether it was showing.
+    pub(super) fn hide(&mut self) -> bool {
+        std::mem::take(&mut self.visible)
+    }
+
+    pub(super) fn clear_message(&mut self) {
+        self.message = None;
+    }
+
+    /// The split between Markdown and the original was dragged.
+    pub(super) fn set_split(&mut self, ratio: f32) {
+        self.split_ratio = Some(ratio.clamp(0.25, 0.75));
+    }
+
+    /// Show `source` as failed with `message`, for renders of failure states.
+    #[cfg(all(
+        debug_assertions,
+        feature = "headless-renders",
+        any(target_os = "macos", target_os = "windows")
+    ))]
+    pub(super) fn show_failure(&mut self, source: PathBuf, message: String) {
+        self.show_source(source);
+        self.retryable = false;
+        self.failed = true;
+        self.message = Some(message);
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+
+    /// Pretend a request for `source` is loading.
+    #[cfg(test)]
+    pub(super) fn set_loading(&mut self, source: PathBuf) {
+        self.source = Some(source);
+        self.loading = true;
+    }
+
+    fn cancel_job(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn invalidate(&mut self) {
+        self.cancel_job();
+        self.pending = None;
+        self.generation = self.generation.wrapping_add(1);
+        self.message = None;
+        self.retryable = false;
+        self.failed = false;
+        self.queued = false;
+    }
+
+    fn begin(&mut self, path: PathBuf) -> u64 {
+        if self.attachment.as_ref() != Some(&path) {
+            self.restore_position = None;
+        }
+        self.invalidate();
+        self.source = Some(path);
+        self.loading = true;
+        self.visible = true;
+        self.generation
+    }
+
+    fn is_current(&self, generation: u64) -> bool {
+        self.loading && self.generation == generation
+    }
+
+    /// Ends the current request with one plain `message`; Retry shows only
+    /// when `retryable`, that is, when another attempt can succeed.
+    fn fail(&mut self, generation: u64, message: String, retryable: bool) -> bool {
+        if !self.is_current(generation) {
+            return false;
+        }
+        self.cancel_job();
+        self.pending = None;
+        self.loading = false;
+        self.queued = false;
+        self.retryable = retryable;
+        self.failed = true;
+        self.message = Some(message);
+        true
+    }
+
+    fn accept(
+        &mut self,
+        generation: u64,
+        theme: Rc<Cell<Theme>>,
+        window: &mut Window,
+        cx: &mut Context<DocumentView>,
+    ) -> bool {
+        if !self.is_current(generation) {
+            return false;
+        }
+        let Some(pending) = self.pending.take() else {
+            return false;
+        };
+        self.release_loaded(window, cx);
+        self.cancel = None;
+        self.loading = false;
+        self.queued = false;
+        self.attachment = self.source.clone();
+        self.retryable = false;
+        self.failed = false;
+        self.message = pending
+            .docx
+            .as_ref()
+            .and_then(|d| (!d.warnings.is_empty()).then(|| d.warnings.join(" ")));
+        self.comment_panel = pending
+            .docx
+            .as_ref()
+            .filter(|d| !d.comments.is_empty())
+            .map(|d| cx.new(|_| comment_panel::CommentPanel::new(d.comments.clone(), theme)));
+        self.docx = pending.docx;
+        if let Some(source) = self.source.as_ref() {
+            let name = source
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let note = self.docx.is_some().then_some(DOCX_NOTE.into());
+            pending.pdf.update(cx, |pdf, cx| {
+                pdf.set_display_name(format!("Source · {name}"), cx);
+                // An expected limitation, not a notice (README media decision 9).
+                pdf.set_source_note(note, cx);
+            });
+        }
+        self.subscription = Some(cx.observe(&pending.pdf, |_, _, cx| cx.notify()));
+        if let Some((page, zoom, fit)) = self.restore_position.take() {
+            pending.pdf.update(cx, |pdf, cx| {
+                pdf.set_zoom(zoom, cx);
+                match fit {
+                    session_store::PreviewFit::Width => pdf.fit_width(cx),
+                    session_store::PreviewFit::Page => pdf.fit_page(cx),
+                    session_store::PreviewFit::Manual => {}
+                }
+                pdf.go_to_page(page, cx);
+            });
+        }
+        self.pdf = Some(pending.pdf);
+        true
+    }
+
+    fn release_loaded(&mut self, window: &mut Window, cx: &mut App) {
+        self.subscription = None;
+        if let Some(pdf) = self.pdf.take() {
+            pdf.update(cx, |pdf, cx| pdf.release(window, cx));
+        }
+        self.docx = None;
+        self.comment_panel = None;
+    }
+
+    fn close(&mut self, window: &mut Window, cx: &mut App) {
+        self.invalidate();
+        self.loading = false;
+        self.source = None;
+        self.attachment = None;
+        self.visible = false;
+        self.queued = false;
+        self.release_loaded(window, cx);
+    }
+}
+
+impl Drop for PreviewState {
+    fn drop(&mut self) {
+        self.cancel_job();
+    }
+}
+
+impl DocumentView {
+    pub(super) fn toggle_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preview.visible = !self.preview.visible;
+        if !self.preview.visible && self.active && self.lifecycle.ready() {
+            if self.lifecycle.source_only() {
+                window.focus(&self.focus, cx);
+            } else {
+                window.focus(&self.editor.read(cx).focus_handle(cx), cx);
+            }
+        }
+        if self.preview.visible
+            && self.preview.pdf.is_none()
+            && !self.preview.loading
+            && let Some(path) = self
+                .preview
+                .attachment
+                .clone()
+                .or(self.preview.source.clone())
+        {
+            self.open_path(path, window, cx);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn close_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preview.close(window, cx);
+    }
+
+    pub(super) fn begin_preview(&mut self, path: PathBuf) -> u64 {
+        self.error = None;
+        self.preview.begin(path)
+    }
+
+    pub(super) fn load_preview(
+        &mut self,
+        path: PathBuf,
+        docx: Option<docx_preview::DocxPreview>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let theme = self.theme.clone();
+        let pdf = cx.new(|cx| {
+            PdfView::new(
+                path,
+                Rc::new(move || theme.get().pdf_style()),
+                Rc::new(|| 1.0),
+                cx,
+            )
+        });
+        // Both source PDFs and converted DOCX previews follow the pane width.
+        // Sticky fit responds to sidebar/window resizing until manually zoomed.
+        let activity_theme = self.theme.clone();
+        pdf.update(cx, |pdf, cx| {
+            pdf.set_loading_indicator(Rc::new(move |label| {
+                crate::ui::activity(label.clone(), label, activity_theme.get()).into_any_element()
+            }));
+            pdf.fit_width(cx);
+            attach_search_field(pdf, cx);
+        });
+        let owner = cx.entity().downgrade();
+        pdf.update(cx, |pdf, _| {
+            pdf.set_on_close(Rc::new(move |window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if this.preview.visible {
+                        this.toggle_preview(window, cx);
+                    }
+                });
+            }))
+        });
+        let generation = self.preview.generation;
+        let subscription = cx.subscribe_in(&pdf, window, move |this, pdf, _, window, cx| {
+            if !this.preview.is_current(generation) {
+                return;
+            }
+            if pdf.read(cx).load_error().is_some() {
+                let retryable = pdf.read(cx).load_error_retryable();
+                let message = if retryable {
+                    UNREADABLE_SOURCE
+                } else {
+                    "This PDF is damaged or incomplete, so it can't be previewed."
+                };
+                this.preview.fail(generation, message.into(), retryable);
+            } else if pdf.read(cx).is_locked() {
+                this.preview.fail(
+                    generation,
+                    "This PDF is password-protected. Open an unlocked copy to preview it.".into(),
+                    false,
+                );
+            } else if pdf.read(cx).is_loaded() {
+                this.preview
+                    .accept(generation, this.theme.clone(), window, cx);
+            } else {
+                return;
+            }
+            let dirty = this.dirty(cx);
+            this.lifecycle.set_dirty(dirty);
+            cx.notify();
+        });
+        self.preview.pending = Some(PendingPreview {
+            pdf,
+            docx,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    pub(super) fn open_pdf(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.begin_preview(path.clone());
+        self.load_preview(path, None, window, cx);
+    }
+
+    pub(super) fn open_docx(
+        &mut self,
+        path: PathBuf,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let generation = self.begin_preview(path.clone());
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.preview.cancel = Some(cancel.clone());
+        self.preview.queued = true;
+        cx.emit(workspace::TabEvent::Docx(workspace::DocxEvent::Queue {
+            path,
+            generation,
+            cancel,
+        }));
+        cx.notify();
+    }
+
+    pub(super) fn run_docx(
+        &mut self,
+        path: PathBuf,
+        generation: u64,
+        cancel: Arc<AtomicBool>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.preview.queued = false;
+        let task = cx.background_executor().spawn(async move {
+            // Headless UI tests cannot launch the test harness as a worker.
+            if cfg!(test) {
+                docx_preview::render_in_process(&path, cancel)
+            } else {
+                docx_preview::render_with_cancel(&path, cancel)
+            }
+        });
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            // The worker is free before this preview loads, as the window
+            // learns it first.
+            let _ = this.update(cx, |_, cx| {
+                cx.emit(workspace::TabEvent::Docx(workspace::DocxEvent::Finished {
+                    generation,
+                }))
+            });
+            let _ = this.update_in(cx, |this, window, cx| {
+                if !this.preview.is_current(generation) {
+                    return;
+                }
+                match result {
+                    Ok(preview) => {
+                        this.load_preview(preview.pdf_path.clone(), Some(preview), window, cx)
+                    }
+                    Err(error) => {
+                        this.preview.fail(
+                            generation,
+                            docx_message(&error).into(),
+                            error.retryable(),
+                        );
+                    }
+                }
+                cx.notify();
+            });
+            Background::Docx { generation }
+        });
+        self.keep_background(task);
+        cx.notify();
+    }
+
+    pub(super) fn retry_preview(
+        &mut self,
+        _: &RetryPreview,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.preview.retryable
+            && let Some(path) = self.preview.source.clone()
+        {
+            self.open_path(path, window, cx);
+        }
+    }
+}
+
+/// The one sentence the preview pane shows for a failed DOCX preview. The
+/// error's `Display` text keeps the technical detail for tests and diagnostics.
+pub(crate) fn docx_message(error: &PreviewError) -> &'static str {
+    match error {
+        PreviewError::InputTooLarge => {
+            "This DOCX is too large to preview. Previews take files up to 50 MB."
+        }
+        PreviewError::MacrosNotSupported => "DOCX files with macros can't be previewed.",
+        PreviewError::Encrypted => {
+            "This DOCX is password-protected. Open an unlocked copy to preview it."
+        }
+        PreviewError::TrackedChangesNotSupported => {
+            "DOCX files with tracked changes can't be previewed. Accept or reject the changes in Word first."
+        }
+        PreviewError::NestedArchive => {
+            "This DOCX contains other packed files, so it can't be previewed."
+        }
+        PreviewError::Package(_) => "This DOCX is damaged or incomplete, so it can't be previewed.",
+        PreviewError::Render(_) => "The preview could not be drawn.",
+        PreviewError::Rejected => "The preview can't draw this DOCX.",
+        PreviewError::Timeout => "The preview took longer than 30 seconds and was stopped.",
+        PreviewError::Cancelled => "The preview was cancelled.",
+        PreviewError::TemporaryStorage(_) => {
+            "mdoc could not create temporary files for the preview."
+        }
+        PreviewError::Read(_) => "mdoc could not read this file. Check that it is still there.",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn newer_request_cancels_old_job_and_rejects_stale_failure() {
+        let mut preview = PreviewState::default();
+        let old = preview.begin("old.docx".into());
+        let cancel = Arc::new(AtomicBool::new(false));
+        preview.cancel = Some(cancel.clone());
+        let current = preview.begin("new.docx".into());
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(!preview.fail(old, "stale".into(), true));
+        assert!(preview.is_current(current));
+        assert!(preview.message.is_none());
+        assert_eq!(preview.source, Some("new.docx".into()));
+        assert!(preview.fail(current, "retry me".into(), true));
+        assert!(preview.retryable);
+        assert!(!preview.loading);
+        assert!(!preview.fail(current, "duplicate".into(), true));
+        assert_eq!(preview.message.as_deref(), Some("retry me"));
+    }
+
+    #[test]
+    fn dropping_preview_cancels_conversion() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut preview = PreviewState::default();
+        preview.cancel = Some(cancel.clone());
+        drop(preview);
+        assert!(cancel.load(Ordering::Relaxed));
+    }
+
+    #[gpui::test]
+    fn stale_accept_cannot_consume_newer_pending_preview(cx: &mut gpui::TestAppContext) {
+        let (app, cx) = crate::document_view::tests::boot(cx);
+        app.update_in(cx, |app, window, cx| {
+            let old = app.begin_preview("old.pdf".into());
+            let current = app.begin_preview("new.pdf".into());
+            app.load_preview("new.pdf".into(), None, window, cx);
+            let pending = app.preview.pending.as_ref().unwrap().pdf.entity_id();
+            assert!(!app.preview.accept(old, app.theme.clone(), window, cx));
+            assert_eq!(
+                app.preview.pending.as_ref().unwrap().pdf.entity_id(),
+                pending
+            );
+            assert!(app.preview.is_current(current));
+            app.close_preview(window, cx);
+            assert!(!app.preview.accept(current, app.theme.clone(), window, cx));
+            assert!(app.preview.pending.is_none());
+        });
+    }
+}
